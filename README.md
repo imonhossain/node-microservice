@@ -1,106 +1,134 @@
-# New Nx Repository
+# Syncra
 
-<a alt="Nx logo" href="https://nx.dev" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/nrwl/nx/master/images/nx-logo.png" width="45"></a>
+An Nx monorepo with a React 19 frontend and a NestJS backend backed by PostgreSQL (Docker).
 
-✨ Your new, shiny [Nx workspace](https://nx.dev) is ready ✨.
+## Stack
 
-[Learn more about this workspace setup and its capabilities](https://nx.dev/nx-api/js?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) or run `npx nx graph` to visually explore what was created. Now, let's get you up to speed!
-## Finish your Nx platform setup
+| Layer        | Tech                                                                |
+| ------------ | ------------------------------------------------------------------- |
+| Monorepo     | Nx 22 · npm workspaces                                              |
+| Frontend     | React 19 · Vite · Tailwind CSS 3 · TanStack Query 5 · Vitest        |
+| Backend      | NestJS 11 · TypeORM · `@nestjs/config`                              |
+| Database     | PostgreSQL 16 (Alpine) running in Docker Compose                    |
 
-🚀 [Finish setting up your workspace](https://cloud.nx.app/connect/WALs5YymN9) to get faster builds with remote caching, distributed task execution, and self-healing CI. [Learn more about Nx Cloud](https://nx.dev/ci/intro/why-nx-cloud).
-## Generate a library
+## Project layout
+
+```
+apps/
+  frontend/        # React 19 + Vite + Tailwind + TanStack Query
+  backend/         # NestJS + TypeORM
+packages/          # shared libraries (empty for now)
+docker-compose.yml # Postgres 16 service
+.env               # local env values (gitignored)
+.env.example       # copy this to .env
+```
+
+## Requirements
+
+- **Node.js** ≥ 20.19 or ≥ 22.13 (currently built on Node 22)
+- **npm** 10+
+- **Docker** with Docker Compose v2 (Docker Desktop on macOS/Windows is fine)
+
+## One-time setup
 
 ```sh
-npx nx g @nx/js:lib packages/pkg1 --publishable --importPath=@my-org/pkg1
+# 1. install dependencies
+npm install
+
+# 2. create your local env file
+cp .env.example .env
 ```
 
-## Run tasks
+Review `.env` and adjust credentials/ports if needed. The default DB host port is **5435** (the container's own 5432 is mapped to host 5435 to avoid clashing with an already-running Postgres on `5432`). Change `DB_PORT` in both `.env` and `docker-compose.yml` if you prefer a different port.
 
-To build the library use:
+## Running the apps
+
+Start the services in separate terminals (or run the combined `dev` script).
 
 ```sh
-npx nx build pkg1
+# Terminal 1 — Postgres
+npm run db:up           # start Postgres in the background
+npm run db:logs         # (optional) follow logs
+npm run db:down         # stop and remove the container
+
+# Terminal 2 — Backend (NestJS)
+npm run backend         # → http://localhost:3000/api
+
+# Terminal 3 — Frontend (React + Vite)
+npm run frontend        # → http://localhost:4200
+
+# Or run frontend + backend together
+npm run dev
 ```
 
-To run any task with Nx use:
+Quick health check once the backend is up:
 
 ```sh
-npx nx <target> <project-name>
+curl http://localhost:3000/api/health
+# → {"status":"ok","uptime":...}
 ```
 
-These targets are either [inferred automatically](https://nx.dev/concepts/inferred-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) or defined in the `project.json` or `package.json` files.
-
-[More about running tasks in the docs &raquo;](https://nx.dev/features/run-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-## Versioning and releasing
-
-To version and release the library use
-
-```
-npx nx release
-```
-
-Pass `--dry-run` to see what would happen without actually releasing the library.
-
-[Learn more about Nx release &raquo;](https://nx.dev/features/manage-releases?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-## Keep TypeScript project references up to date
-
-Nx automatically updates TypeScript [project references](https://www.typescriptlang.org/docs/handbook/project-references.html) in `tsconfig.json` files to ensure they remain accurate based on your project dependencies (`import` or `require` statements). This sync is automatically done when running tasks such as `build` or `typecheck`, which require updated references to function correctly.
-
-To manually trigger the process to sync the project graph dependencies information to the TypeScript project references, run the following command:
+## Everyday commands
 
 ```sh
-npx nx sync
+# build
+npx nx build frontend
+npx nx build backend
+
+# test
+npx nx test frontend
+npx nx test backend
+
+# lint / typecheck
+npx nx lint frontend
+npx nx lint backend
+npx nx typecheck backend
+
+# run any target on any project
+npx nx <target> <project>
+
+# run the same target across several projects
+npx nx run-many -t build -p frontend,backend
+
+# visualise the project graph
+npx nx graph
 ```
 
-You can enforce that the TypeScript project references are always in the correct state when running in CI by adding a step to your CI job configuration that runs the following command:
+Targets are either [inferred automatically](https://nx.dev/concepts/inferred-tasks) or defined in each app's `project.json` / `package.json`.
+
+## Environment variables
+
+Defined in `.env` (see `.env.example`):
+
+| Variable         | Default                    | Used by                |
+| ---------------- | -------------------------- | ---------------------- |
+| `NODE_ENV`       | `development`              | backend                |
+| `PORT`           | `3000`                     | backend                |
+| `CORS_ORIGINS`   | `http://localhost:4200`    | backend                |
+| `DB_HOST`        | `localhost`                | backend                |
+| `DB_PORT`        | `5435`                     | backend + docker       |
+| `DB_USERNAME`    | `syncra`                   | backend + docker       |
+| `DB_PASSWORD`    | `syncra`                   | backend + docker       |
+| `DB_NAME`        | `syncra`                   | backend + docker       |
+| `VITE_API_URL`   | `http://localhost:3000/api`| frontend (Vite)        |
+
+TypeORM runs with `synchronize: true` whenever `NODE_ENV !== 'production'`, so entity changes are reflected automatically in development. Turn this off and use migrations before shipping to production.
+
+## Adding a shared library
 
 ```sh
-npx nx sync:check
+npx nx g @nx/js:lib packages/shared --importPath=@syncra/shared
 ```
 
-[Learn more about nx sync](https://nx.dev/reference/nx-commands#sync)
+## Troubleshooting
 
-## Nx Cloud
+- **`Bind for 0.0.0.0:5435 failed: port is already allocated`** — another service is using that port. Change `DB_PORT` in `.env` **and** in `docker-compose.yml` (the host side of the port mapping), then `npm run db:down && npm run db:up`.
+- **Backend can't connect to Postgres** — make sure `npm run db:up` finished and `docker compose ps` reports the container as `healthy`.
+- **Frontend gets CORS errors** — add the frontend origin to `CORS_ORIGINS` in `.env` (comma-separated) and restart the backend.
 
-Nx Cloud ensures a [fast and scalable CI](https://nx.dev/ci/intro/why-nx-cloud?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) pipeline. It includes features such as:
+## Learn more
 
-- [Remote caching](https://nx.dev/ci/features/remote-cache?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Task distribution across multiple machines](https://nx.dev/ci/features/distribute-task-execution?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Automated e2e test splitting](https://nx.dev/ci/features/split-e2e-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Task flakiness detection and rerunning](https://nx.dev/ci/features/flaky-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-### Set up CI (non-Github Actions CI)
-
-**Note:** This is only required if your CI provider is not GitHub Actions.
-
-Use the following command to configure a CI workflow for your workspace:
-
-```sh
-npx nx g ci-workflow
-```
-
-[Learn more about Nx on CI](https://nx.dev/ci/intro/ci-with-nx#ready-get-started-with-your-provider?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-## Install Nx Console
-
-Nx Console is an editor extension that enriches your developer experience. It lets you run tasks, generate code, and improves code autocompletion in your IDE. It is available for VSCode and IntelliJ.
-
-[Install Nx Console &raquo;](https://nx.dev/getting-started/editor-setup?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-## Useful links
-
-Learn more:
-
-- [Learn more about this workspace setup](https://nx.dev/nx-api/js?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Learn about Nx on CI](https://nx.dev/ci/intro/ci-with-nx?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Releasing Packages with Nx release](https://nx.dev/features/manage-releases?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [What are Nx plugins?](https://nx.dev/concepts/nx-plugins?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-And join the Nx community:
-
-- [Discord](https://go.nx.dev/community)
-- [Follow us on X](https://twitter.com/nxdevtools) or [LinkedIn](https://www.linkedin.com/company/nrwl)
-- [Our Youtube channel](https://www.youtube.com/@nxdevtools)
-- [Our blog](https://nx.dev/blog?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+- [Nx documentation](https://nx.dev)
+- [NestJS documentation](https://docs.nestjs.com)
+- [TanStack Query](https://tanstack.com/query/latest)
+- [TypeORM](https://typeorm.io)

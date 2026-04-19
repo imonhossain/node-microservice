@@ -46,3 +46,11 @@ Thumbs.db
 .claude/worktrees
 .claude/settings.local.json
 .nx/polygraph
+vite.config.*.timestamp*
+vitest.config.*.timestamp*
+test-output
+
+# env files
+.env
+.env.local
+.env.*.local
