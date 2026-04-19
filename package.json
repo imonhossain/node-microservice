@@ -2,6 +2,22 @@
   "name": "@syncra/source",
   "version": "0.0.0",
   "license": "MIT",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@nestjs/core",
+      "@parcel/watcher",
+      "@swc/core",
+      "esbuild",
+      "less",
+      "nx",
+      "unrs-resolver"
+    ]
+  },
   "scripts": {
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
@@ -65,10 +81,6 @@
     "vitest": "~4.1.0",
     "webpack-cli": "^5.1.4"
   },
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "dependencies": {
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.4",
