@@ -1,21 +1,153 @@
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: syncra-postgres
-    restart: unless-stopped
-    ports:
-      - '${DB_PORT:-5432}:5432'
-    environment:
-      POSTGRES_USER: ${DB_USERNAME:-syncra}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-syncra}
-      POSTGRES_DB: ${DB_NAME:-syncra}
+    image: ankane/pgvector:latest
+    ports: ['5435:5432']
     volumes:
-      - syncra-postgres-data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/pg-init:/docker-entrypoint-initdb.d
+    environment:
+      POSTGRES_USER: syncra
+      POSTGRES_PASSWORD: syncra
+      POSTGRES_DB: syncra
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-syncra} -d ${DB_NAME:-syncra}']
+      test: ['CMD-SHELL', 'pg_isready -U syncra -d syncra']
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 10
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    ports: ['6432:6432']
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: syncra
+      DB_PASSWORD: syncra
+      DB_NAME: syncra
+      LISTEN_PORT: 6432
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      ADMIN_USERS: syncra
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+
+  nats:
+    image: nats:2-alpine
+    command: ['-js', '-m', '8222']
+    ports: ['4222:4222', '8222:8222']
+
+  nats-box:
+    image: natsio/nats-box:latest
+    entrypoint: ['/bin/sh', '-c', 'trap : TERM INT; sleep infinity & wait']
+    environment:
+      NATS_URL: nats://nats:4222
+    depends_on: [nats]
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    ports: ['7700:7700']
+    environment:
+      MEILI_MASTER_KEY: dev-master-key
+      MEILI_ENV: development
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: syncra
+      POSTGRES_PWD: syncra
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: temporalio/ui:2.30.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports: ['8080:8080']
+    depends_on: [temporal]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports: ['9200:9000', '9201:9001']
+    environment:
+      MINIO_ROOT_USER: syncra
+      MINIO_ROOT_PASSWORD: syncra-secret
+    volumes:
+      - minio:/data
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ['1025:1025', '8025:8025']
+
+  unleash-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: unleash
+      POSTGRES_PASSWORD: unleash
+      POSTGRES_DB: unleash
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U unleash -d unleash']
+      interval: 5s
+
+  unleash:
+    image: unleashorg/unleash-server:latest
+    ports: ['4242:4242']
+    environment:
+      DATABASE_URL: 'postgres://unleash:unleash@unleash-db:5432/unleash'
+      DATABASE_SSL: 'false'
+    depends_on:
+      unleash-db:
+        condition: service_healthy
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ['--config=/etc/otelcol-contrib/config.yaml']
+    volumes:
+      - ./infra/otel/config.yaml:/etc/otelcol-contrib/config.yaml
+    ports: ['4317:4317', '4318:4318']
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports: ['9090:9090']
+
+  loki:
+    image: grafana/loki:latest
+    command: ['-config.file=/etc/loki/local-config.yaml']
+    ports: ['3100:3100']
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes:
+      - ./infra/tempo/tempo.yaml:/etc/tempo.yaml
+    ports: ['3200:3200']
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ['3030:3000']
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    depends_on: [prometheus, loki, tempo]
+
 volumes:
-  syncra-postgres-data:
+  pgdata:
+  minio:
