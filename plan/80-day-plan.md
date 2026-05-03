@@ -102,15 +102,18 @@ A concrete day-by-day plan to learn the new territory in `ARCHITECTURE.md` and s
 
 ---
 
-### Day 4 — Workspaces + memberships + invitations + Casbin
+### Day 4 — Workspaces + memberships + invitations + Casbin + onboarding flow
 
 **Build**
-- `workspace` module: create, rename, invite, accept, list members.
-- Invitation tokens: single-use, 7-day TTL; email via Mailpit.
+  - `workspace` module: create, rename, invite, accept, list members. Workspace creation atomically inserts `workspaces` + `workspace_members(role='owner')` in one transaction (see ARCHITECTURE.md §16.5.2).
+- Invitation tokens: single-use, 7-day TTL; email via Mailpit. `/invite/:token` route resolves the token, JIT-creates `users` if needed, inserts `workspace_members`, redirects to `/w/<slug>/`.
 - `libs/auth-kit`: Casbin model + `policy.csv`; `@RequireAction('workspace:invite')`; middleware sets `app.workspace_id` from the route param.
-- Frontend: workspace switcher, "create workspace" dialog, invite form.
+- Frontend onboarding (ARCHITECTURE.md §16.5):
+  - `/onboarding/workspace` — name + slug with debounced live availability check; mandatory after sign-up if no memberships.
+  - `/onboarding/invite` — multi-email invite form with skippable "Add later" button.
+  - Workspace switcher + invite-form components reused inside the app shell after onboarding.
 
-**New**: Casbin model language · invitation-token security.
+**New**: Casbin model language · invitation-token security · onboarding-as-a-router-guard pattern.
 
 ---
 
@@ -127,30 +130,36 @@ A concrete day-by-day plan to learn the new territory in `ARCHITECTURE.md` and s
 
 ---
 
-### Day 6 — TanStack Router + layout + shadcn/ui
+### Day 6 — TanStack Router + layout + shadcn/ui + onboarding guards
 
 **Build**
-- File-based routes: `__root.tsx`, `_auth/login.tsx`, `_app/*`, `_app/w.$workspaceId/*`.
-- `beforeLoad` on `_app` asserts session; 401 → `/login`.
+- File-based routes: `__root.tsx`, `_auth/login.tsx`, `_onboarding/{workspace,invite}.tsx`, `_app/*`, `_app/w.$workspaceId/*`.
+- `beforeLoad` chain (ARCHITECTURE.md §16.5.4):
+  - `_app`: asserts session; 401 → `/login`.
+  - `_app`: if `memberships.length === 0` → redirect to `/onboarding/workspace`.
+  - `_app/w.$workspaceId`: asserts the user is a member of `$workspaceId`; otherwise redirect to last-active workspace or `/onboarding/workspace`.
+  - `_auth`: signed-in users redirect to last-active workspace cookie.
+- Last-active-workspace cookie (`__Host-syncra-last-ws`) set on every workspace navigation.
 - shadcn/ui: Button, Input, Dialog, DropdownMenu, Sheet, Toast (Sonner), cmdk shell.
 - Tailwind v4 `@theme` tokens; dark-mode `[data-theme]`.
 
-**New**: TanStack Router loader semantics · Tailwind v4 `@theme` (no config file).
+**New**: TanStack Router loader semantics · Tailwind v4 `@theme` (no config file) · `beforeLoad` chain composition.
 
 ---
 
 ### Day 7 — Rest + polish + weekly demo
 
 - Finish Week 1 gaps; write outstanding ADRs.
-- Record 60-s demo (sign-in → invite → accept).
+- Record 90-s demo of the **first-touch flow** (ARCHITECTURE.md §16.5): sign-up → IdP → `/onboarding/workspace` → `/onboarding/invite` → empty workspace with first-task CTA. Time-to-first-task should be **under 90 seconds**.
 - `size-limit` checked in with initial budget.
 
 ---
 
 ## Week 2 — Projects, Tasks, Outbox, Audit (Days 8–14)
 
-### Day 8 — Projects + tasks + JSONB custom fields
+### Day 8 — Projects + tasks + JSONB custom fields + workspace empty state
 Tables: `projects`, `tasks` (with `custom_fields jsonb` + GIN index), `custom_field_definitions`. RLS everywhere. tRPC CRUD. Task list + create-task dialog on the frontend. Filter by jsonb fields.
+**Empty-state UX (ARCHITECTURE.md §16.5)**: when `tasks.length === 0` for a workspace, render an auto-focused first-task input with three click-to-insert suggestions ("Plan kick-off meeting", "Draft project brief", "Set milestones"). Each suggestion is a real `task.create` mutation — instant first-success moment.
 
 ### Day 9 — Transactional outbox
 `outbox` + `processed_events` tables. `libs/event-bus/outbox.ts` — `OutboxService.enqueue()` in the domain tx. `libs/event-bus/relay.ts` — publishes to NATS with `msgId = event.id`. First events: `task.created/updated/deleted`. Zod schemas in `libs/contracts/events`. **ADR 0004 — Outbox pattern.**
@@ -284,8 +293,9 @@ Option A (recommended for learning): self-host PostHog via their Helm chart (wai
 - Autocapture configured with a denylist of PII-bearing selectors.
 
 ### Day 45 — PostHog funnels + retention + replay
-- Funnels: sign-up → create-workspace → invite → create-task → task completed.
-- Retention: D1/D7/D28 by workspace.
+- Activation event (ARCHITECTURE.md §16.5.7): client-side `posthog.capture('activated')` on the **first** successful `task.create`. D1/D7/D28 retention is anchored to this event, not to sign-up — pre-activation users are noise.
+- Funnels: `sign_up → workspace_created → invite_sent` (or skipped) `→ first_task_created → first_task_completed → second_session_d1`.
+- Retention: D1/D7/D28 cohorts keyed by `activated` timestamp, sliced by workspace.
 - Session replay with PII masking (`data-ph-no-capture` attribute on sensitive elements).
 - PostHog feature-flag experiments wired alongside OpenFeature (PostHog provides the experiment analytics; OpenFeature evaluates).
 

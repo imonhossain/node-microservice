@@ -920,6 +920,126 @@ sequenceDiagram
     A-->>U: confirmation email
 ```
 
+### 16.5 Sign-up & onboarding flow (first-touch UX)
+
+The protocol bits — cookie sessions, JIT-provisioning, JWKS verification — are covered in §13. This section is the **product flow** a brand-new user actually walks through. The goal is *time-to-first-task under 90 seconds*; everything below is in service of that.
+
+#### 16.5.1 The user journey (≈ 5 screens)
+
+```
+1. Landing (/login)              ─ "Sign up" or "Sign in"
+2. IdP redirect                   ─ Auth.js / Clerk → email or social
+3. /onboarding/workspace          ─ Create your first workspace (name + slug)
+4. /onboarding/invite             ─ Invite teammates by email (skippable)
+5. /w/<slug>/                     ─ Workspace home with empty state +
+                                    "Create your first task" CTA pre-focused
+```
+
+The key product opinions:
+
+- **No "verify your email" interstitial.** IdP already handled it. We trust the IdP.
+- **Workspace creation is mandatory at step 3.** A signed-in user without a workspace cannot reach `/w/...` routes — the router redirects them to `/onboarding/workspace`. This eliminates a whole class of "user has account but no tenant" edge cases.
+- **Invites are skippable but defaulted-visible.** Solo users can press "Skip" and land on the empty workspace; team users see the invite form first because that's their actual intent.
+- **The empty workspace is *not* empty-looking.** A first-task CTA is auto-focused, plus 3 inline-suggested example tasks ("Plan kick-off meeting", "Draft project brief", "Set milestones"). Clicking any inserts it as a real task — instant first-success moment.
+- **First mutation triggers PostHog `activated` event.** D1/D7/D28 retention is measured from this moment, not from sign-up.
+
+#### 16.5.2 Server-side state transitions
+
+| Step                     | Routes hit                          | DB writes (in order)                                                  | Events emitted                                  |
+| ------------------------ | ----------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------- |
+| 2. IdP redirect          | `GET /auth/callback`                | `users` (insert if `external_id` unseen) — JIT provision               | `user.registered` (only on insert)              |
+| 3. Create workspace      | `tRPC workspace.create`             | `workspaces` + `workspace_members(role='owner')` (one tx)              | `workspace.created`, `member.added`             |
+| 4. Send invitations      | `tRPC workspace.invite`             | `invitations` × N (one tx)                                            | `workspace.invitation.created` × N              |
+| 5. Create first task     | `tRPC task.create`                  | `tasks` + `outbox` (one tx)                                           | `task.created` (via outbox relay)               |
+| 5*. PostHog activation   | client-side `posthog.capture`       | —                                                                     | `activated` (PostHog only, not the event bus)   |
+
+`workspace.create` does both rows in one transaction so no signed-in user can ever land in a state with a workspace they aren't a member of (the §13 guard relies on `workspace_members` to authorise routes).
+
+#### 16.5.3 Sequence diagram
+
+```mermaid
+sequenceDiagram
+    actor U as New user
+    participant FE as frontend
+    participant IdP as Auth.js / Clerk
+    participant A as api
+    participant DB as PostgreSQL
+    participant N as NATS
+    participant E as Mailpit / SES
+    participant PH as PostHog
+
+    U->>FE: visits /login
+    FE->>IdP: redirect (sign-up)
+    IdP-->>U: email/social form
+    U->>IdP: completes
+    IdP-->>FE: callback w/ id_token (cookie set)
+    FE->>A: GET /api/me
+    A->>DB: SELECT users WHERE external_id = sub
+    alt first-time
+        A->>DB: INSERT users RETURNING *
+        A->>N: user.registered
+    end
+    A-->>FE: { user, memberships: [] }
+    FE->>FE: router: no memberships → /onboarding/workspace
+    U->>FE: enters name + slug
+    FE->>A: tRPC workspace.create
+    A->>DB: BEGIN; INSERT workspaces; INSERT workspace_members(owner); COMMIT
+    A->>N: workspace.created, member.added
+    A-->>FE: { workspaceId, slug }
+    FE->>FE: navigate /onboarding/invite
+    U->>FE: emails (or skip)
+    FE->>A: tRPC workspace.invite (× N)
+    A->>DB: INSERT invitations
+    A->>N: workspace.invitation.created × N
+    A->>E: send invite emails (BullMQ → email worker)
+    FE->>FE: navigate /w/<slug>/  (empty-state with first-task CTA)
+    U->>FE: clicks "Plan kick-off meeting"
+    FE->>A: tRPC task.create
+    A->>DB: BEGIN; INSERT tasks; INSERT outbox; COMMIT
+    A-->>FE: Task
+    FE->>PH: capture('activated')
+```
+
+#### 16.5.4 Routing & guards (TanStack Router)
+
+```
+__root.tsx
+└─ /login                        ← unauth-only; signed-in users redirect to /
+└─ /auth/callback                ← IdP return; sets cookie, fetches /me, decides next
+└─ /onboarding/workspace         ← auth + (memberships.length === 0)
+└─ /onboarding/invite            ← auth + (just-created workspace context)
+└─ /w/$workspaceId/...           ← auth + member of $workspaceId
+```
+
+The `beforeLoad` hook on each `_app` segment makes these decisions. A user without memberships landing on `/w/foo` is redirected to `/onboarding/workspace` — never sees a 404 or a permission error.
+
+#### 16.5.5 Returning-user variants
+
+- **Signed-in, has workspaces** → `/login` redirects to the last-active workspace (stored in `__Host-syncra-last-ws` cookie).
+- **Signed-in, owns one workspace, was deleted** → routed to `/onboarding/workspace` (treat as new user).
+- **Signed-in, multiple workspaces** → `/` shows a workspace switcher (no separate selector route; same `cmdk` palette as in-app switching).
+- **Invitation acceptance** → `/invite/:token` resolves the invite, signs the user in if needed, JIT-creates the user row if needed, inserts a `workspace_members` row, and lands them on `/w/<slug>/` with the inviter's name in a welcome toast.
+- **SSO-enforced workspace** (Week 11) → email domain matches `enforce_sso = true` workspace → IdP redirect bypasses default Auth.js sign-in.
+
+#### 16.5.6 Friction we deliberately accept
+
+- **No social-only sign-up if SSO is enforced for the user's email domain.** They get a clear "Your company uses SSO; sign in via your IdP" screen.
+- **Slug uniqueness is global**, not per-tenant. Users see live availability check during workspace creation (debounced).
+- **No "skip account creation" / anonymous workspaces.** Every workspace has a real owner from minute one — needed for billing-less flag gating later, audit fidelity, and GDPR deletion correctness.
+
+#### 16.5.7 Activation metrics (PostHog)
+
+Funnel tracked from Day 0 of the product (Week 7 in the build plan):
+
+```
+sign_up               → workspace_created    → invite_sent (or skipped)
+workspace_created     → first_task_created
+first_task_created    → first_task_completed
+first_task_completed  → second_session_d1   (returns within 24h)
+```
+
+The "activated" event fires on `first_task_created`. D1/D7/D28 retention cohorts are computed from that moment — *not* from sign-up — because pre-activation users are noise.
+
 ---
 
 ## 17. Monorepo Layout (Nx)
