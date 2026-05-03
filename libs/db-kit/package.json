@@ -1,0 +1,33 @@
+{
+  "name": "@syncra/db-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".":         "./src/index.ts",
+    "./schema":  "./src/schema/index.ts",
+    "./migrate": "./src/migrate.ts"
+  },
+  "scripts": {
+    "drizzle:generate": "drizzle-kit generate",
+    "drizzle:check":    "drizzle-kit check",
+    "db:migrate":       "tsx src/migrate.ts",
+    "db:reset":         "tsx bin/reset.ts && pnpm db:migrate",
+    "test":             "vitest run"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.0",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.28.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.6.0",
+    "vitest": "^2.1.0",
+    "@testcontainers/postgresql": "^10.13.0",
+    "testcontainers": "^10.13.0"
+  }
+}

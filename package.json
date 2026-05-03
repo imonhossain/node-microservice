@@ -24,6 +24,9 @@
     "db:logs": "docker compose logs -f postgres",
     "frontend": "nx serve frontend",
     "backend": "nx serve backend",
+    "db:migrate": "pnpm -F @syncra/db-kit db:migrate",
+    "db:reset":   "pnpm -F @syncra/db-kit db:reset",
+    "db:test":    "pnpm -F @syncra/db-kit test",
     "dev": "nx run-many -t serve -p frontend,backend"
   },
   "private": true,

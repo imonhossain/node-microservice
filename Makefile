@@ -27,3 +27,9 @@ nats-sub:
 nats-pub:
 	@test -n "$(SUBJECT)" || (echo "usage: make nats-pub SUBJECT=task.created MSG='{\"id\":1}'"; exit 1)
 	docker compose exec -e NATS_URL=nats://nats:4222 nats-box nats pub "$(SUBJECT)" "$(MSG)"
+
+migrate:
+	pnpm db:migrate
+
+db-reset:
+	pnpm db:reset
