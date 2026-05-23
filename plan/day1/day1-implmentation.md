@@ -1,50 +1,38 @@
 # Day 1 — Implementation
 
-## 1. Runtime: Node 24 + pnpm 10 via Corepack
+## 1. Runtime: Node 24 + npm 10 (bundled)
 
 ```sh
 nvm install 24
 nvm use 24
 echo "24" > .nvmrc
 
-corepack enable
-corepack prepare pnpm@10.33.0 --activate
-
-# If migrating from npm:
-pnpm import          # reads package-lock.json -> pnpm-lock.yaml
-rm -rf node_modules package-lock.json
-pnpm install
+npm install                      # installs across all workspaces; writes package-lock.json
 ```
 
-`package.json`:
+Root `package.json`:
 
 ```jsonc
 {
-  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=24.0.0",
-    "pnpm": ">=10.0.0"
-  }
+    "npm":  ">=10.0.0"
+  },
+  "workspaces": ["apps/*", "libs/*", "packages/*"]
 }
 ```
 
-`pnpm-workspace.yaml`:
-
-```yaml
-packages:
-  - 'apps/*'
-  - 'packages/*'
-```
+> npm reads `workspaces` directly from `package.json` — no separate workspace YAML to maintain.
 
 ### Verify
 
 ```sh
 node --version          # v24.x
-pnpm --version          # 10.33.0
+npm --version           # 10.x (ships with Node 24)
 cat .nvmrc              # 24
-ls pnpm-workspace.yaml pnpm-lock.yaml
-pnpm install            # clean run, no errors
-pnpm nx --version
+ls package.json package-lock.json
+npm install             # clean run, no errors
+npx nx --version
 ```
 
 ---
@@ -397,7 +385,7 @@ restart:
 	docker compose restart
 
 check:
-	pnpm tsx scripts/check-infra.ts
+	npx tsx scripts/check-infra.ts
 
 psql:
 	psql 'postgresql://syncra:syncra@localhost:6432/syncra'
@@ -410,11 +398,11 @@ nats-sub:
 
 ## 10. Smoke-test script
 
-Install runtime deps at the workspace root (`-w` flag is required in a pnpm workspace):
+Install runtime deps at the workspace root (no `-w` flag — these belong to the root, not a workspace):
 
 ```sh
-pnpm add -Dw tsx @types/pg
-pnpm add  -w pg ioredis nats
+npm install --save-dev tsx @types/pg
+npm install pg ioredis nats
 ```
 
 `scripts/check-infra.ts`:
@@ -565,7 +553,7 @@ OK   otel http (4318)
 | -------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- |
 | `zsh: command not found: logs:` when typing Makefile contents        | Pasting recipe lines into shell instead of saving to `Makefile`    | Save to `Makefile` (capital M, no extension), TAB-indented; run `make up` |
 | `WARN Unsupported engine: wanted: {"node":">=24.0.0"}`               | Shell still on Node 22                                             | `nvm install 24 && nvm use 24`                                       |
-| `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "tsx" not found`         | tsx missing                                                        | `pnpm add -Dw tsx @types/pg`                                         |
+| `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "tsx" not found`         | tsx missing                                                        | `npm install --save-dev tsx @types/pg`                                         |
 | `zsh: command not found: psql`                                       | host has no Postgres client                                        | `brew install libpq && brew link --force libpq`, **or** use container: `docker compose exec postgres psql -U syncra -d syncra` |
 | `service "nats" is not running`                                      | stack never booted                                                 | `make up` first                                                      |
 | Tempo container `Exited (1)` with `field ingester not found`         | `grafana/tempo:latest` (≥2.9) renamed/removed top-level fields     | Pin `image: grafana/tempo:2.6.0` in compose                          |
@@ -697,7 +685,7 @@ Then in Prometheus (`http://localhost:9090`) query `day1_smoke_total` → return
 
 ```sh
 node --version            # v24.x
-pnpm --version            # 10.33.x
+npm --version             # 10.x
 cat .nvmrc                # 24
 docker compose ps         # all Up / healthy
 make check                # all ✔

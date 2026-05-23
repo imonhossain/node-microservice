@@ -11,11 +11,11 @@
 There are two kinds of setup pain:
 
 1. **Slow pain**: spending 30 minutes installing tools today, methodically, with verifications.
-2. **Fast pain**: skipping setup and discovering on Day 14 that your editor's TypeScript doesn't match CI's, that your secrets are in plaintext in `.env`, that your commit history shows your personal email on a "professional" repo, or that nobody told you that `pnpm install` failed silently because of a Corepack mismatch.
+2. **Fast pain**: skipping setup and discovering on Day 14 that your editor's TypeScript doesn't match CI's, that your secrets are in plaintext in `.env`, that your commit history shows your personal email on a "professional" repo, or that nobody told you that `npm install` failed silently because of a Corepack mismatch.
 
 Day 0 is slow pain by choice. Everything you do today is one of:
 
-- A **toolchain** decision (Node, pnpm, Docker) → pick once, pin it, never think again.
+- A **toolchain** decision (Node, npm, Docker) → pick once, pin it, never think again.
 - A **workspace** decision (Nx, libs vs apps, contracts boundary) → defines what Day 1+ slots into.
 - A **process** decision (ADRs, journal, conventional commits, branch hygiene) → cheap to set up; very expensive to retrofit.
 
@@ -27,8 +27,8 @@ Day 0 is slow pain by choice. Everything you do today is one of:
        ┌────────────────▼────────────────┐
        │ toolchain      | workspace      │
        │ ─ nvm, Node 24 │ ─ Nx monorepo  │
-       │ ─ Corepack +   │ ─ apps/* libs/* │
-       │   pnpm 10      │ ─ contracts    │
+       │ ─ npm 10       │ ─ apps/* libs/* │
+       │   (built-in)   │ ─ contracts    │
        │ ─ Docker       │ ─ Biome        │
        │ ─ git, gh, ssh │ ─ tsconfig base │
        │ ─ infra CLIs   │ ─ scripts dir  │
@@ -76,19 +76,33 @@ We pin to **Node 24** because:
 - Permission model (`--permission`) — finer-grained than "everything or nothing".
 - Stable test runner (`node:test`) good enough for ad-hoc scripts without Jest/Vitest.
 
-### 1.3 Corepack + pnpm
+### 1.3 npm 10 — the bundled package manager
 
-Skip `npm install -g pnpm`. **Corepack** ships *inside* Node and lets `package.json` declare which package manager + version this project expects:
+We use **npm**. It ships inside Node 24, so nothing to install and nothing to bootstrap. If you have Node, you have npm.
+
+`package.json` declares the engine constraints:
 
 ```jsonc
 {
-  "packageManager": "pnpm@10.33.0"
+  "engines": {
+    "node": ">=24.0.0",
+    "npm":  ">=10.0.0"
+  },
+  "workspaces": ["apps/*", "libs/*", "packages/*"]
 }
 ```
 
-When any teammate runs `pnpm install` for the first time, Corepack downloads exactly that version of pnpm. No "I'm on pnpm 8, you're on pnpm 10, why does our lockfile keep flipping" arguments.
+When any teammate clones the repo and runs `npm install`, npm installs everything across the workspaces and writes a single `package-lock.json` at the root. That lockfile is committed; everyone gets identical resolved versions.
 
-**Why pnpm over npm/yarn**: see day1.md §1 — content-addressable store, strict by default, fast, workspaces are first-class. Standard for monorepos in 2026.
+**Why npm**:
+
+- npm 10 has shipped first-class **workspaces** support for years now — `npm install`, `npm install <dep> -w <pkg>`, and `npm run <script> -w <pkg>` all work cleanly across the monorepo.
+- One package manager. Nothing to install. New machines, fresh OS reinstalls, throwaway CI containers — everything that has Node 24 already has npm.
+- Standard everywhere. Every cheat-sheet, every CI sample, every Stack Overflow answer assumes npm.
+
+Trade-off we accept:
+
+- npm hoists `node_modules` (anything declared anywhere can be `require`'d) — easier to write "phantom dependency" bugs. We mitigate with `eslint-plugin-import/no-extraneous-dependencies` later.
 
 ### 1.4 Docker Desktop
 
@@ -124,7 +138,7 @@ Eager today: `git`, `gh`, `psql` (libpq), `sops`, `age`, `jq`, `yq`, `httpie`. T
 
 ### 1.6 Why install via Homebrew (and pin nothing)
 
-We let brew float. This is a learning project, not a banking system. If brew bumps `kubectl` next month, that's fine — most CLIs are backwards-compatible enough. Pinning matters for *language runtimes* (Node) and *package managers* (pnpm) because they touch `node_modules` reproducibility. CLIs are throwaway.
+We let brew float. This is a learning project, not a banking system. If brew bumps `kubectl` next month, that's fine — most CLIs are backwards-compatible enough. Pinning matters for the *language runtime* (Node) because it touches `node_modules` reproducibility. CLIs are throwaway.
 
 ---
 
@@ -216,8 +230,8 @@ One repo. One install. One PR can change a contract and its 3 consumers atomical
 
 | Tool        | Strength                                           | Weakness                                              |
 | ----------- | -------------------------------------------------- | ----------------------------------------------------- |
-| **pnpm workspaces alone** | Zero magic, just symlinks                | No task graph, no cache, no "affected"                |
-| **Lerna**   | Originally made this category                       | Maintenance has been inconsistent; less interesting after pnpm absorbed most of its features |
+| **npm workspaces alone**  | Zero magic, just hoisting                | No task graph, no cache, no "affected"                |
+| **Lerna**   | Originally made this category                       | Maintenance has been inconsistent; superseded by built-in npm/yarn workspaces |
 | **Turborepo** | Beautifully simple, great cache, great DX         | Plugin ecosystem narrower than Nx; less opinionated    |
 | **Rush**    | Microsoft-grade, very mature                        | Heavy, opinionated config, smaller community           |
 | **Nx**      | Plugin per framework, generators, computation cache, "affected", visualisation | Heavier than Turborepo; more concepts to learn |
@@ -379,13 +393,13 @@ Even on a solo repo, set up CI Day 0. Without it, a PR that "looks fine" can sti
 
 The Day 0 workflow is small — three jobs:
 
-1. **Lint** — `pnpm exec biome ci .`
-2. **Type-check** — `pnpm nx run-many -t typecheck`
-3. **Build** — `pnpm nx run-many -t build`
+1. **Lint** — `npx biome ci .`
+2. **Type-check** — `npx nx run-many -t typecheck`
+3. **Build** — `npx nx run-many -t build`
 
 We add tests on Day 2 (when there's something to test). We add `nx affected` on Day 14 (when the graph is large enough that "run everything" is slow).
 
-Cache `node_modules` via `actions/setup-node` + `pnpm` cache config. First run takes 90s; subsequent runs ~30s. Don't optimise further today.
+Cache `node_modules` via `actions/setup-node` (it has built-in `cache: npm`). First run takes 90s; subsequent runs ~30s. Don't optimise further today.
 
 ---
 
@@ -416,8 +430,8 @@ syncra/
 ├── .nvmrc                      # "24"
 ├── biome.json                  # one config for lint + format
 ├── nx.json                     # Nx workspace config
-├── package.json                # packageManager: pnpm@10.33.0
-├── pnpm-workspace.yaml         # apps/* libs/* packages/*
+├── package.json                # workspaces field: apps/*, libs/*, packages/*
+├── package-lock.json           # npm lockfile (committed)
 ├── tsconfig.base.json          # strict TS settings, project references
 ├── README.md
 ├── ARCHITECTURE.md             # already exists
@@ -435,7 +449,7 @@ You won't write much code today. Apps are *scaffolded* by Nx generators with the
 - [ ] Git global config + SSH key + `gh auth login`.
 - [ ] GitHub repo created and pushed.
 - [ ] `nvm install 24`, `.nvmrc` pinned.
-- [ ] Corepack enabled + pnpm pinned via `packageManager`.
+- [ ] `npm install` clean; `workspaces` field declared in root `package.json`.
 - [ ] Nx workspace bootstrapped with apps `api`, `frontend`, `realtime`, `workers`, lib `contracts`.
 - [ ] `tsconfig.base.json`, `biome.json`, `.editorconfig`, `.gitignore`, `.nvmrc`, `.env.example` committed.
 - [ ] `docs/adr/template.md` + `docs/adr/0000-record-architecture-decisions.md` committed.
@@ -451,7 +465,7 @@ You won't write much code today. Apps are *scaffolded* by Nx generators with the
 ```sh
 # Toolchain
 node --version              # v24.x
-pnpm --version              # 10.x
+npm --version               # 10.x (ships with Node 24)
 docker --version            # 24+
 git --version
 gh --version
@@ -460,7 +474,7 @@ sops --version
 age --version
 
 # Workspace
-ls .nvmrc biome.json nx.json package.json pnpm-workspace.yaml tsconfig.base.json
+ls .nvmrc biome.json nx.json package.json package-lock.json tsconfig.base.json
 ls apps/api apps/frontend apps/realtime apps/workers
 ls libs/contracts
 ls docs/adr docs/journal docs/runbooks
@@ -468,11 +482,11 @@ test -f docs/adr/template.md && echo OK
 test -f docs/adr/0000-record-architecture-decisions.md && echo OK
 
 # Sanity
-pnpm install                # clean
-pnpm exec biome ci .        # green
-pnpm nx run-many -t typecheck   # green
-pnpm nx run-many -t build       # green
-pnpm nx graph --file=graph.json && echo OK     # graph emits
+npm install                # clean
+npx biome ci .        # green
+npx nx run-many -t typecheck   # green
+npx nx run-many -t build       # green
+npx nx graph --file=graph.json && echo OK     # graph emits
 
 # CI
 git push                    # opens PR; check Actions tab
@@ -482,11 +496,11 @@ git push                    # opens PR; check Actions tab
 
 ## 13. Checkpoint — Day 0 done when
 
-- [ ] `node --version` → `v24.x`, `pnpm --version` → `10.x`.
+- [ ] `node --version` → `v24.x`, `npm --version` → `10.x`.
 - [ ] `gh repo view` shows the repo.
-- [ ] `pnpm install` is clean and uses the pinned `pnpm@10.33.0`.
-- [ ] `pnpm nx run-many -t typecheck` and `-t build` both green.
-- [ ] `pnpm exec biome ci .` exits 0.
+- [ ] `npm install` is clean; `package-lock.json` committed at root.
+- [ ] `npx nx run-many -t typecheck` and `-t build` both green.
+- [ ] `npx biome ci .` exits 0.
 - [ ] `nx graph` opens in the browser and shows your projects.
 - [ ] CI on `main` is green; opening a PR runs the workflow.
 - [ ] `age-keygen -y -o /dev/null < ~/.config/sops/age/keys.txt` returns a public key.
@@ -521,8 +535,8 @@ The point of today is that Day 1 morning starts with `make up`, not with `brew i
 ## 16. Further reading (skim, don't memorise)
 
 - nvm — https://github.com/nvm-sh/nvm
-- Corepack — https://nodejs.org/api/corepack.html
-- pnpm — https://pnpm.io
+- npm workspaces — https://docs.npmjs.com/cli/v10/using-npm/workspaces
+- npm CLI reference — https://docs.npmjs.com/cli/v10/commands
 - Nx — https://nx.dev
 - Nx affected — https://nx.dev/concepts/affected
 - Nx project graph — https://nx.dev/features/explore-graph

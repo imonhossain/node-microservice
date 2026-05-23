@@ -32,7 +32,7 @@ export async function startTestDb(): Promise<TestDb> {
     .start();
 
   const superUrl = container.getConnectionUri();
-  execSync('pnpm db:migrate', {
+  execSync('npm run db:migrate', {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, DATABASE_URL: superUrl },
     stdio: 'inherit',

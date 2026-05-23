@@ -41,13 +41,13 @@ Each "container" we bring up today is a piece of that picture. In production you
 
 ---
 
-## 1. The runtime — Node 24 + nvm + Corepack
+## 1. The runtime — Node 24 + nvm + npm
 
 ### What changed
 
 - `.nvmrc` pins Node **24** for this repo.
-- `package.json` has `"packageManager": "pnpm@10.33.0"` — Corepack enforces it.
-- `pnpm install` now replaces `npm install` everywhere.
+- The root `package.json` has a `workspaces` array — npm uses that to wire up `apps/*`, `libs/*`, `packages/*`.
+- `npm install` at the root installs every workspace at once and writes a single `package-lock.json`.
 
 ### Why Node 24
 
@@ -58,26 +58,22 @@ Node's release cadence is: every ~6 months a new major; LTS ones are even-number
 - Permission model (`--permission`) — finer-grained than "everything or nothing".
 - Test runner (`node:test`) good enough to replace Jest for simple repos.
 
-### Why pnpm over npm or yarn
+### Why npm
 
-Before pnpm:
-- **npm** flattens `node_modules/`. Every app in a monorepo duplicates the same 500 MB of deps. `any` package in any workspace can `require("lodash")` even if it didn't declare it — **"phantom dependencies"**. Phantom deps break when you remove the real one elsewhere.
-- **yarn classic (v1)** — the original fix for npm slowness; EOL in 2022.
-- **yarn berry (v2+)** — big migration, Plug-n-Play bytecode, divisive.
+npm 10 ships inside Node 24. Nothing to install, nothing to bootstrap. The features we need are already there:
 
-pnpm's fix:
-- A single **content-addressable store** at `~/.local/share/pnpm/store/`. A given version of a package exists on disk exactly once, system-wide. Your `node_modules/` is a tree of **symlinks** into that store.
-- Strict by default: package A can only `require` something A declared in its `package.json`. Phantom deps become errors.
-- Workspaces are first-class: `pnpm -F frontend add lodash` adds it to one package; everyone else is untouched.
-- 2–10× faster installs than npm for monorepos.
+- **Speed** — npm 10 is fast enough for a repo of our size. We notice install times in seconds, not minutes.
+- **Workspaces** — first-class since npm 7. `npm install`, `npm install -w <pkg>`, and `npm run <script> -w <pkg>` all work cleanly across the monorepo.
+- **Lockfile** — `package-lock.json` at the repo root pins every transitive dependency. CI uses `npm ci` for byte-for-byte identical installs.
 
-### The `pnpm` workspace protocol
+The one trade-off worth knowing: npm hoists `node_modules`, which means any package can `require` something a sibling declared (a "phantom dependency"). We accept that and add `eslint-plugin-import/no-extraneous-dependencies` later as the guardrail.
 
-```yaml
-# pnpm-workspace.yaml
-packages:
-  - 'apps/*'
-  - 'packages/*'
+### npm workspaces in two lines
+
+Root `package.json`:
+
+```json
+{ "workspaces": ["apps/*", "libs/*", "packages/*"] }
 ```
 
 In an app's `package.json`:
@@ -85,28 +81,32 @@ In an app's `package.json`:
 ```jsonc
 {
   "dependencies": {
-    "@syncra/contracts": "workspace:*"
+    "@syncra/contracts": "*"
   }
 }
 ```
 
-`workspace:*` means *"use whatever version the monorepo has locally"*. At publish time pnpm rewrites this to a real version. During dev, it's a symlink to the sibling package — so editing `libs/contracts` shows up in `apps/api` immediately.
+`npm install` at the root symlinks `@syncra/contracts` into the consumer's `node_modules`. Edit `libs/contracts/src/foo.ts` and `apps/api` sees the change immediately — that's the whole point of a workspace.
 
-### Corepack — why not `npm install -g pnpm`?
+### Targeting one workspace from the root
 
-Corepack ships **inside Node** (since Node 16). Set `packageManager` in `package.json`; Corepack downloads that exact version the first time you run `pnpm`. Everyone on the team gets the same version without managing it manually. The `npm install -g` path means "whatever version the first dev happened to install".
+```sh
+npm install drizzle-orm -w @syncra/db-kit          # add a dep to one workspace
+npm install --save-dev tsx -w @syncra/db-kit       # devDep in one workspace
+npm test -w @syncra/db-kit                          # run "test" in one workspace
+npm run db:migrate -w @syncra/db-kit                # any script
+npm exec --workspace=@syncra/db-kit -- tsc --noEmit # run a CLI inside the workspace
+```
 
-### `pnpm import`
-
-You had a `package-lock.json`. Rewriting every version by hand would drift. `pnpm import` reads the npm lockfile and produces `pnpm-lock.yaml` with **the same resolved versions** — zero semver surprises at the switch. We ran it earlier; the file is already committed.
+`-w` is short for `--workspace`. Repeat it (`-w pkg1 -w pkg2`) to target multiple, or use `--workspaces` to mean "all of them".
 
 ### Verify
 
 ```sh
 node --version        # v24.x.x
-pnpm --version        # 10.x.x
+npm --version         # 10.x.x  (bundled with Node 24)
 cat .nvmrc            # 24
-ls pnpm-workspace.yaml pnpm-lock.yaml
+ls package.json package-lock.json
 ```
 
 ---
@@ -141,14 +141,14 @@ logs:
 	docker compose logs -f
 ```
 
-Why Make and not `pnpm scripts`?
+Why Make and not `npm scripts`?
 
-- Scripts in `package.json` are fine for app-related things (`pnpm dev`, `pnpm build`).
+- Scripts in `package.json` are fine for app-related things (`npm run dev`, `npm run build`).
 - Infra lives **outside** the app — before the app exists, when the app is broken, when you're debugging the database. You don't want those commands coupled to the JS ecosystem.
 - Make has been on every Unix box for 50 years. No setup.
-- `make up` is shorter than `pnpm run docker:up` and signals "this is infra, not app code".
+- `make up` is shorter than `npm run docker:up` and signals "this is infra, not app code".
 
-Think of it like: `pnpm <thing>` = application; `make <thing>` = everything under the app.
+Think of it like: `npm run <thing>` = application; `make <thing>` = everything under the app.
 
 ---
 
@@ -575,7 +575,7 @@ restart:
 	docker compose restart
 
 check:
-	pnpm tsx scripts/check-infra.ts
+	npx tsx scripts/check-infra.ts
 ```
 
 ### 12.3 `scripts/check-infra.ts`
@@ -611,7 +611,7 @@ for (const [name, check] of checks) {
 }
 ```
 
-Run with `pnpm tsx scripts/check-infra.ts` (tsx runs TypeScript directly, no build step).
+Run with `npx tsx scripts/check-infra.ts` (tsx runs TypeScript directly, no build step).
 
 ### 12.4 Verification the user-facing way
 
@@ -636,10 +636,10 @@ psql 'postgresql://syncra:syncra@localhost:6432/syncra' -c 'SELECT 1'
 ## 13. Checkpoint — Day 1 done when
 
 - [ ] `node --version` → `v24.x` and `.nvmrc` has `24`.
-- [ ] `pnpm --version` → `10.x`.
-- [ ] `pnpm install` is clean; `pnpm nx --version` works.
+- [ ] `npm --version` → `10.x`.
+- [ ] `npm install` is clean; `npx nx --version` works.
 - [ ] `docker compose ps` lists every service as `Up (healthy)`.
-- [ ] `make check` (or `pnpm tsx scripts/check-infra.ts`) prints `✔` for every line.
+- [ ] `make check` (or `npx tsx scripts/check-infra.ts`) prints `✔` for every line.
 - [ ] `nats sub ">" &; nats pub test.foo '{"ok":1}'` prints the published message.
 - [ ] `psql` via `localhost:6432` (PgBouncer) returns `1`.
 - [ ] Grafana loads at `http://localhost:3030` with Prometheus/Loki/Tempo listed as datasources.
@@ -666,7 +666,7 @@ The point of today is that **nothing you ever build in Syncra will be blocked by
 
 ## 16. Further reading (skim, don't memorise)
 
-- pnpm workspaces — https://pnpm.io/workspaces
+- npm workspaces — https://docs.npmjs.com/cli/v10/using-npm/workspaces
 - PgBouncer — https://www.pgbouncer.org/usage.html
 - pgvector — https://github.com/pgvector/pgvector
 - pg_partman — https://github.com/pgpartman/pg_partman

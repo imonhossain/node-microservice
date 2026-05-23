@@ -461,7 +461,7 @@ The frontend is a **pure single-page app** (no SSR) talking to the `api` service
 | Framework                 | **React 19**                                           | Compiler handles most memoisation; server-component-ready; actions API  |
 | Build tool                | **Vite 6** + `@vitejs/plugin-react`                    | Fastest DX; ESM-first; production Rollup build                         |
 | Language                  | TypeScript (strict, `noUncheckedIndexedAccess` on)     | No silent `undefined` in array/record access                           |
-| Package manager           | **pnpm**                                               | Fastest install for monorepos; strict, no phantom deps; Nx-compatible  |
+| Package manager           | **npm 10** (bundled with Node 24)                      | Zero-bootstrap; first-class workspaces; Nx-compatible; one less tool   |
 | Router                    | **TanStack Router**                                    | Type-safe routes + search-param schemas + loaders; pairs with Query    |
 | Server state              | **TanStack Query v5**                                  | Cache, mutations, suspense, optimistic updates, offline persistence    |
 | Offline mutation queue    | `@tanstack/query-persist-client` + broadcast channel   | Writes while offline queue locally and replay on reconnect             |
