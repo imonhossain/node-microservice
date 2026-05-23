@@ -2,31 +2,24 @@
   "name": "@syncra/source",
   "version": "0.0.0",
   "license": "MIT",
-  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=24.0.0",
-    "pnpm": ">=10.0.0"
+    "npm": ">=10.0.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@nestjs/core",
-      "@parcel/watcher",
-      "@swc/core",
-      "esbuild",
-      "less",
-      "nx",
-      "unrs-resolver"
-    ]
-  },
+  "workspaces": [
+    "apps/*",
+    "libs/*",
+    "packages/*"
+  ],
   "scripts": {
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
     "frontend": "nx serve frontend",
     "backend": "nx serve backend",
-    "db:migrate": "pnpm -F @syncra/db-kit db:migrate",
-    "db:reset":   "pnpm -F @syncra/db-kit db:reset",
-    "db:test":    "pnpm -F @syncra/db-kit test",
+    "db:migrate": "npm run db:migrate -w @syncra/db-kit",
+    "db:reset": "npm run db:reset -w @syncra/db-kit",
+    "db:test": "npm test -w @syncra/db-kit",
     "dev": "nx run-many -t serve -p frontend,backend"
   },
   "private": true,

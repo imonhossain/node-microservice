@@ -6,7 +6,7 @@ An Nx monorepo with a React 19 frontend and a NestJS backend backed by PostgreSQ
 
 | Layer        | Tech                                                                |
 | ------------ | ------------------------------------------------------------------- |
-| Monorepo     | Nx 22 · **pnpm** workspaces                                         |
+| Monorepo     | Nx 22 · **npm** workspaces                                          |
 | Runtime      | **Node.js 24** (via nvm; pinned by `.nvmrc`)                        |
 | Frontend     | React 19 · Vite · Tailwind CSS 3 · TanStack Query 5 · Vitest        |
 | Backend      | NestJS 11 · TypeORM · `@nestjs/config`                              |
@@ -20,10 +20,10 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full target architecture and 
 apps/
   frontend/        # React 19 + Vite + Tailwind + TanStack Query
   backend/         # NestJS + TypeORM
-packages/          # shared libraries (empty for now)
+libs/              # shared libraries (db-kit, auth-kit, contracts, ...)
+packages/          # additional shared packages (empty for now)
 plan/              # 80-day build plan
-docker-compose.yml # Postgres 16 service
-pnpm-workspace.yaml
+docker-compose.yml # full local infra stack
 .nvmrc             # pins Node 24
 .env               # local env values (gitignored)
 .env.example       # copy this to .env
@@ -32,7 +32,7 @@ pnpm-workspace.yaml
 ## Requirements
 
 - **Node.js 24** — installed via [nvm](https://github.com/nvm-sh/nvm). The `.nvmrc` in the repo pins the version.
-- **pnpm 10+** — activated via Corepack (ships with Node). No manual install.
+- **npm 10+** — ships with Node 24. No separate install.
 - **Docker** with Docker Compose v2 (Docker Desktop on macOS/Windows is fine).
 
 ## One-time setup
@@ -42,14 +42,10 @@ pnpm-workspace.yaml
 nvm install        # reads .nvmrc and installs Node 24 if not already present
 nvm use            # activates Node 24 for this shell
 
-# 2. enable Corepack (ships with Node 24) and activate pnpm
-corepack enable
-corepack prepare pnpm@latest --activate
+# 2. install dependencies
+npm install
 
-# 3. install dependencies
-pnpm install
-
-# 4. create your local env file
+# 3. create your local env file
 cp .env.example .env
 ```
 
@@ -61,18 +57,18 @@ Start the services in separate terminals (or run the combined `dev` script).
 
 ```sh
 # Terminal 1 — Postgres
-pnpm db:up              # start Postgres in the background
-pnpm db:logs            # (optional) follow logs
-pnpm db:down            # stop and remove the container
+npm run db:up           # start Postgres in the background
+npm run db:logs         # (optional) follow logs
+npm run db:down         # stop and remove the container
 
 # Terminal 2 — Backend (NestJS)
-pnpm backend            # → http://localhost:3000/api
+npm run backend         # → http://localhost:3000/api
 
 # Terminal 3 — Frontend (React + Vite)
-pnpm frontend           # → http://localhost:4200
+npm run frontend        # → http://localhost:4200
 
 # Or run frontend + backend together
-pnpm dev
+npm run dev
 ```
 
 Quick health check once the backend is up:
@@ -86,26 +82,26 @@ curl http://localhost:3000/api/health
 
 ```sh
 # build
-pnpm nx build frontend
-pnpm nx build backend
+npx nx build frontend
+npx nx build backend
 
 # test
-pnpm nx test frontend
-pnpm nx test backend
+npx nx test frontend
+npx nx test backend
 
 # lint / typecheck
-pnpm nx lint frontend
-pnpm nx lint backend
-pnpm nx typecheck backend
+npx nx lint frontend
+npx nx lint backend
+npx nx typecheck backend
 
 # run any target on any project
-pnpm nx <target> <project>
+npx nx <target> <project>
 
 # run the same target across several projects
-pnpm nx run-many -t build -p frontend,backend
+npx nx run-many -t build -p frontend,backend
 
 # visualise the project graph
-pnpm nx graph
+npx nx graph
 ```
 
 Targets are either [inferred automatically](https://nx.dev/concepts/inferred-tasks) or defined in each app's `project.json` / `package.json`.
@@ -131,24 +127,24 @@ TypeORM runs with `synchronize: true` whenever `NODE_ENV !== 'production'`, so e
 ## Adding a shared library
 
 ```sh
-pnpm nx g @nx/js:lib packages/shared --importPath=@syncra/shared
+npx nx g @nx/js:lib packages/shared --importPath=@syncra/shared
 ```
 
 ## Troubleshooting
 
-- **`Bind for 0.0.0.0:5435 failed: port is already allocated`** — another service is using that port. Change `DB_PORT` in `.env` **and** in `docker-compose.yml` (the host side of the port mapping), then `pnpm db:down && pnpm db:up`.
-- **Backend can't connect to Postgres** — make sure `pnpm db:up` finished and `docker compose ps` reports the container as `healthy`.
+- **`Bind for 0.0.0.0:5435 failed: port is already allocated`** — another service is using that port. Change `DB_PORT` in `.env` **and** in `docker-compose.yml` (the host side of the port mapping), then `npm run db:down && npm run db:up`.
+- **Backend can't connect to Postgres** — make sure `npm run db:up` finished and `docker compose ps` reports the container as `healthy`.
 - **Frontend gets CORS errors** — add the frontend origin to `CORS_ORIGINS` in `.env` (comma-separated) and restart the backend.
 - **Wrong Node version** — run `nvm use` in the repo root; it reads `.nvmrc`.
-- **`pnpm` not found** — run `corepack enable && corepack prepare pnpm@latest --activate`.
-- **`Ignored build scripts` warning after a dependency change** — new packages need their postinstall scripts allowlisted in `package.json` under `pnpm.onlyBuiltDependencies`.
+- **`npm` not found** — Node 24 includes npm by default. Reinstall Node via `nvm install 24`.
+- **Stale lockfile after dependency change** — delete `node_modules` and `package-lock.json`, then `npm install`.
 
 ## Learn more
 
 - [Architecture doc](./ARCHITECTURE.md)
 - [80-day build plan](./plan/80-day-plan.md)
 - [Nx documentation](https://nx.dev)
-- [pnpm workspaces](https://pnpm.io/workspaces)
+- [npm workspaces](https://docs.npmjs.com/cli/v10/using-npm/workspaces)
 - [NestJS documentation](https://docs.nestjs.com)
 - [TanStack Query](https://tanstack.com/query/latest)
 - [TypeORM](https://typeorm.io)
