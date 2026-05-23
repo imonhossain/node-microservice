@@ -18,17 +18,15 @@ mkdir -p libs/db-kit/src/schema libs/db-kit/migrations/sql libs/db-kit/test libs
 cd libs/db-kit
 ```
 
-Add `libs/*` to the **root** `pnpm-workspace.yaml` (not a nested one — pnpm only reads the root file):
+Make sure `libs/*` is listed in the **root** `package.json`'s `workspaces` array:
 
-```yaml
-# /pnpm-workspace.yaml  (repo root)
-packages:
-  - 'apps/*'
-  - 'packages/*'
-  - 'libs/*'
+```json
+{
+  "workspaces": ["apps/*", "libs/*", "packages/*"]
+}
 ```
 
-> **Trap**: do **not** create a `pnpm-workspace.yaml` inside `libs/db-kit`. pnpm will treat that folder as its own workspace and skip dep installation. If one exists, delete it.
+> **Trap**: do **not** add a `workspaces` field inside `libs/db-kit/package.json` itself. That field only belongs at the monorepo root.
 
 `libs/db-kit/package.json`:
 
@@ -49,7 +47,7 @@ packages:
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:check":    "drizzle-kit check",
     "db:migrate":       "tsx src/migrate.ts",
-    "db:reset":         "tsx bin/reset.ts && pnpm db:migrate",
+    "db:reset":         "tsx bin/reset.ts && npm run db:migrate",
     "test":             "vitest run"
   },
   "dependencies": {
@@ -100,7 +98,7 @@ Install everything from the repo root:
 
 ```sh
 cd ../../
-pnpm install
+npm install
 ```
 
 ---
@@ -258,7 +256,7 @@ export default defineConfig({
 Generate the first migration:
 
 ```sh
-pnpm -F @syncra/db-kit drizzle:generate
+npm run drizzle:generate -w @syncra/db-kit
 ls libs/db-kit/migrations
 # 0000_<random_name>.sql  _meta/  meta_journal.json
 ```
@@ -503,9 +501,9 @@ console.log('schema reset');
 ## 9. Run it
 
 ```sh
-pnpm -F @syncra/db-kit db:reset
-pnpm -F @syncra/db-kit db:migrate
-pnpm -F @syncra/db-kit db:migrate          # second run prints all "skip"
+npm run db:reset -w @syncra/db-kit
+npm run db:migrate -w @syncra/db-kit
+npm run db:migrate -w @syncra/db-kit          # second run prints all "skip"
 ```
 
 Verify schema and policies:
@@ -599,7 +597,7 @@ export async function startTestDb(): Promise<TestDb> {
     .start();
 
   const superUrl = container.getConnectionUri();
-  execSync('pnpm db:migrate', {
+  execSync('npm run db:migrate', {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, DATABASE_URL: superUrl },
     stdio: 'inherit',
@@ -713,7 +711,7 @@ export default defineConfig({
 Run:
 
 ```sh
-pnpm -F @syncra/db-kit test
+npm test -w @syncra/db-kit
 ```
 
 Expected: 3 passing tests.
@@ -727,9 +725,9 @@ In repo-root `package.json` add:
 ```jsonc
 {
   "scripts": {
-    "db:migrate": "pnpm -F @syncra/db-kit db:migrate",
-    "db:reset":   "pnpm -F @syncra/db-kit db:reset",
-    "db:test":    "pnpm -F @syncra/db-kit test"
+    "db:migrate": "npm run db:migrate", -w @syncra/db-kit
+    "db:reset":   "npm run db:reset", -w @syncra/db-kit
+    "db:test":    "npm test -w @syncra/db-kit"
   }
 }
 ```
@@ -738,10 +736,10 @@ Add to `Makefile`:
 
 ```makefile
 migrate:
-	pnpm db:migrate
+	npm run db:migrate
 
 db-reset:
-	pnpm db:reset
+	npm run db:reset
 ```
 
 (TAB-indented — same warning as Day 1.)
@@ -801,15 +799,15 @@ Chosen: **Drizzle ORM**.
 ## 13. Done-criteria checklist
 
 ```sh
-pnpm -F @syncra/db-kit drizzle:check                                            # schema/migration in sync
-pnpm -F @syncra/db-kit db:reset && pnpm -F @syncra/db-kit db:migrate            # clean apply
-pnpm -F @syncra/db-kit db:migrate                                               # idempotent: all "skip"
+npm run drizzle:check -w @syncra/db-kit                                            # schema/migration in sync
+npm run db:reset -w @syncra/db-kit && npm run db:migrate -w @syncra/db-kit            # clean apply
+npm run db:migrate -w @syncra/db-kit                                               # idempotent: all "skip"
 psql 'postgresql://syncra:syncra@localhost:6432/syncra' -c '\dt'                # 5 tables (4 + _drizzle_migrations)
 psql 'postgresql://syncra:syncra@localhost:6432/syncra' \
   -c "SELECT count(*) FROM pg_policy;"                                          # 3
 psql 'postgresql://app_user:app_user@localhost:6432/syncra' \
   -c "SELECT count(*) FROM workspaces;"                                         # 0  (no app.workspace_id)
-pnpm -F @syncra/db-kit test                                                     # 3 passing
+npm test -w @syncra/db-kit                                                     # 3 passing
 test -f docs/adr/0001-drizzle-over-prisma-and-typeorm.md && echo OK            # ADR present
 ```
 
@@ -819,7 +817,7 @@ test -f docs/adr/0001-drizzle-over-prisma-and-typeorm.md && echo OK            #
 
 | Symptom                                                                              | Cause                                                                                         | Fix                                                                                                                          |
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `Cannot find module 'drizzle-orm/pg-core'` in IDE                                    | `libs/*` not in root `pnpm-workspace.yaml`, so deps never installed                            | Add `- 'libs/*'` to root `pnpm-workspace.yaml`; remove any nested `pnpm-workspace.yaml`; `pnpm install` from root           |
+| `Cannot find module 'drizzle-orm/pg-core'` in IDE                                    | `libs/*` not in the root `package.json` `workspaces` array, so deps never installed             | Add `"libs/*"` to the root `package.json` `workspaces` field; run `npm install` from the repo root                          |
 | `Cannot find module '@drizzle-orm/pg-core'`                                          | Typo: leading `@` (it's `drizzle-orm/pg-core`, no scope)                                       | Search-and-replace `@drizzle-orm` → `drizzle-orm` across the lib                                                              |
 | `Cannot find name 'process'`                                                          | tsconfig didn't include `@types/node`                                                         | Add `"types": ["node"]` to `libs/db-kit/tsconfig.json`                                                                       |
 | Migration fails with `syntax error at or near "sql"` or `"```"`                       | Markdown code-fence (` ```sql ` / ` ``` `) accidentally pasted into the `.sql` file            | Open the file, delete the fence lines (first and/or last), save                                                              |
@@ -841,7 +839,7 @@ test -f docs/adr/0001-drizzle-over-prisma-and-typeorm.md && echo OK            #
 ## 15. Tear down (test only)
 
 ```sh
-pnpm -F @syncra/db-kit db:reset      # wipes the public schema and re-applies
+npm run db:reset -w @syncra/db-kit      # wipes the public schema and re-applies
 make down                            # stops every Day-1 container; volumes preserved
 make down -v                         # DESTRUCTIVE: also wipes pgdata
 ```

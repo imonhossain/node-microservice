@@ -16,7 +16,7 @@ restart:
 	docker compose restart
 
 check:
-	pnpm tsx scripts/check-infra.ts
+	npx tsx scripts/check-infra.ts
 
 psql:
 	psql 'postgresql://syncra:syncra@localhost:6432/syncra'
@@ -29,7 +29,7 @@ nats-pub:
 	docker compose exec -e NATS_URL=nats://nats:4222 nats-box nats pub "$(SUBJECT)" "$(MSG)"
 
 migrate:
-	pnpm db:migrate
+	npm run db:migrate
 
 db-reset:
-	pnpm db:reset
+	npm run db:reset

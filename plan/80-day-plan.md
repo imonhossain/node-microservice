@@ -50,7 +50,7 @@ A concrete day-by-day plan to learn the new territory in `ARCHITECTURE.md` and s
 
 - Re-read `ARCHITECTURE.md` cover to cover. Mark anything you don't recognise.
 - Ensure Docker has ≥ 10 GB RAM / 4 CPUs; 50 GB disk free.
-- Install: Node 22, pnpm, Docker Desktop, `psql`, `nats` CLI, `temporal` CLI, `mc` (MinIO), `kubectl`, `helm`, `k3d` (or `kind`), `linkerd` CLI, `sops`, `age`, `argocd` CLI.
+- Install: Node 24 (which bundles npm 10), Docker Desktop, `psql`, `nats` CLI, `temporal` CLI, `mc` (MinIO), `kubectl`, `helm`, `k3d` (or `kind`), `linkerd` CLI, `sops`, `age`, `argocd` CLI.
 - Create: GitHub repo (with Actions), Temporal Cloud dev namespace (optional), OpenAI or Anthropic key, Sentry org (free tier), PostHog Cloud free account (or self-host in Week 7), WorkOS free tier (for SSO later).
 - Generate an `age` keypair for SOPS; store private key in `~/.config/sops/age/keys.txt`.
 - Create `docs/journal/` and `docs/adr/` folders. Copy MADR-4 template into `docs/adr/template.md`.
@@ -62,12 +62,12 @@ A concrete day-by-day plan to learn the new territory in `ARCHITECTURE.md` and s
 ### Day 1 — Infra bootstrap
 
 **Build**
-- Migrate Nx workspace to pnpm (`pnpm import`).
+- Initialise the Nx workspace with npm workspaces (root `package.json` `workspaces: ["apps/*", "libs/*", "packages/*"]`).
 - Full `docker-compose.yml`: postgres:16 + pgvector + pg_partman · pgbouncer · redis:7 · nats:2-alpine `-js` · meilisearch · temporal + temporal-ui · minio + mc · mailpit · unleash (+unleash-db) · otel-collector · tempo · loki · prometheus · grafana.
 - `make up`, `make down`, `make logs`.
 - `scripts/check-infra.ts` smoke-tests each service.
 
-**New**: pnpm workspace protocol · pg_partman init-time partitioning · JetStream vs core NATS.
+**New**: npm workspace protocol · pg_partman init-time partitioning · JetStream vs core NATS.
 
 **Ship**: every container green; `nats sub '>'` sees a test publish; Postgres reachable via PgBouncer.
 
@@ -505,7 +505,7 @@ Demo: add simplesamlphp as IdP → enforce SSO on a workspace → user's next vi
 
 ### Day 78 — Full security + performance pass
 - CSP + HSTS audit at the ingress.
-- `pnpm audit --prod`; upgrade or justify each finding.
+- `npm audit --omit=dev`; upgrade or justify each finding.
 - Load test with k6: 1k RPS writes, 10k WS connections. Fix any SLO regressions.
 - Threat-model review against the `ARCHITECTURE.md` §19 checklist — every box checked.
 - Rotate the S2S JWT signing key end-to-end; rotate a webhook secret; verify dual-signature window.

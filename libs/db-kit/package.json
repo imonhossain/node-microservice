@@ -14,7 +14,7 @@
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:check":    "drizzle-kit check",
     "db:migrate":       "tsx src/migrate.ts",
-    "db:reset":         "tsx bin/reset.ts && pnpm db:migrate",
+    "db:reset":         "tsx bin/reset.ts && npm run db:migrate",
     "test":             "vitest run"
   },
   "dependencies": {

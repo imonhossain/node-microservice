@@ -47,13 +47,14 @@ node --version                   # v24.x
 
 ---
 
-## 3. Corepack + pnpm
+## 3. npm — verify it ships with Node 24
 
 ```sh
-corepack enable
-corepack prepare pnpm@10.33.0 --activate
-pnpm --version                   # 10.33.0
+node --version            # v24.x
+npm --version             # 10.x (bundled with Node 24)
 ```
+
+If `npm` is missing your Node install is broken; reinstall via `nvm install 24`.
 
 ---
 
@@ -186,9 +187,9 @@ From inside an empty `syncra/` directory (or use `npx` to create one):
 
 ```sh
 # Creates a new Nx workspace named "syncra" with no preset (we add apps manually)
-pnpm dlx create-nx-workspace@latest syncra \
+npx create-nx-workspace@latest syncra \
   --preset=ts \
-  --packageManager=pnpm \
+  --packageManager=npm \
   --nxCloud=skip \
   --formatter=none \
   --linter=none
@@ -200,7 +201,7 @@ cd syncra
 
 ---
 
-## 10. Pin `packageManager` + workspace layout
+## 10. Declare workspaces + engines
 
 `package.json`:
 
@@ -210,11 +211,15 @@ cd syncra
   "version": "0.0.0",
   "private": true,
   "license": "MIT",
-  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=24.0.0",
-    "pnpm": ">=10.0.0"
+    "npm":  ">=10.0.0"
   },
+  "workspaces": [
+    "apps/*",
+    "libs/*",
+    "packages/*"
+  ],
   "scripts": {
     "format":     "biome format --write .",
     "lint":       "biome check .",
@@ -232,14 +237,7 @@ cd syncra
 }
 ```
 
-`pnpm-workspace.yaml`:
-
-```yaml
-packages:
-  - 'apps/*'
-  - 'libs/*'
-  - 'packages/*'
-```
+> **No separate workspace file.** npm reads the `workspaces` array directly from the root `package.json`. One source of truth — no extra YAML to keep in sync.
 
 `.nvmrc`:
 
@@ -250,7 +248,7 @@ packages:
 Install:
 
 ```sh
-pnpm install
+npm install
 ```
 
 ---
@@ -258,7 +256,7 @@ pnpm install
 ## 11. Add Nx plugins
 
 ```sh
-pnpm add -Dw @nx/js @nx/nest @nx/react @nx/vite @nx/eslint
+npm install --save-dev @nx/js @nx/nest @nx/react @nx/vite @nx/eslint
 ```
 
 ---
@@ -267,23 +265,23 @@ pnpm add -Dw @nx/js @nx/nest @nx/react @nx/vite @nx/eslint
 
 ```sh
 # api — NestJS HTTP service
-pnpm nx g @nx/nest:app api --directory=apps/api --tags=type:app,scope:api --skipFormat
+npx nx g @nx/nest:app api --directory=apps/api --tags=type:app,scope:api --skipFormat
 
 # realtime — NestJS standalone (Hocuspocus host)
-pnpm nx g @nx/nest:app realtime --directory=apps/realtime --tags=type:app,scope:realtime --skipFormat
+npx nx g @nx/nest:app realtime --directory=apps/realtime --tags=type:app,scope:realtime --skipFormat
 
 # workers — NestJS standalone (NATS / Temporal consumers)
-pnpm nx g @nx/nest:app workers --directory=apps/workers --tags=type:app,scope:workers --skipFormat
+npx nx g @nx/nest:app workers --directory=apps/workers --tags=type:app,scope:workers --skipFormat
 
 # frontend — React + Vite SPA
-pnpm nx g @nx/react:app frontend --directory=apps/frontend --bundler=vite --routing=true --style=tailwind --tags=type:app,scope:frontend --skipFormat
+npx nx g @nx/react:app frontend --directory=apps/frontend --bundler=vite --routing=true --style=tailwind --tags=type:app,scope:frontend --skipFormat
 ```
 
 Quick sanity check — each app should serve / build:
 
 ```sh
-pnpm nx build api
-pnpm nx build frontend
+npx nx build api
+npx nx build frontend
 ```
 
 ---
@@ -291,8 +289,8 @@ pnpm nx build frontend
 ## 13. Scaffold the shared `contracts` lib
 
 ```sh
-pnpm nx g @nx/js:lib contracts --directory=libs/contracts --tags=type:lib,scope:shared --bundler=tsc --unitTestRunner=vitest --skipFormat
-pnpm -F @syncra/contracts add zod
+npx nx g @nx/js:lib contracts --directory=libs/contracts --tags=type:lib,scope:shared --bundler=tsc --unitTestRunner=vitest --skipFormat
+npm install zod -w @syncra/contracts
 ```
 
 The lib's name should resolve to `@syncra/contracts`. Update its `package.json` if needed:
@@ -306,7 +304,7 @@ Probe import:
 ```sh
 echo "import { z } from 'zod'; export const Hello = z.object({ msg: z.string() });" \
   > libs/contracts/src/lib/hello.ts
-pnpm nx typecheck contracts
+npx nx typecheck contracts
 ```
 
 ---
@@ -345,7 +343,7 @@ pnpm nx typecheck contracts
 ## 15. Biome configuration
 
 ```sh
-pnpm exec biome init
+npx biome init
 ```
 
 Replace `biome.json`:
@@ -359,7 +357,7 @@ Replace `biome.json`:
       "**/.nx/**",
       "**/coverage/**",
       "**/node_modules/**",
-      "pnpm-lock.yaml"
+      "package-lock.json"
     ]
   },
   "organizeImports": { "enabled": true },
@@ -387,8 +385,8 @@ Replace `biome.json`:
 Verify:
 
 ```sh
-pnpm exec biome ci .                # exits 0 on a clean tree
-pnpm exec biome check --write .     # auto-fix
+npx biome ci .                # exits 0 on a clean tree
+npx biome check --write .     # auto-fix
 ```
 
 ---
@@ -420,7 +418,6 @@ indent_style = tab
 ```gitignore
 # Dependencies
 node_modules
-.pnpm-store/
 
 # Build output
 dist/
@@ -445,7 +442,6 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
-pnpm-debug.log*
 
 # Env
 .env
@@ -705,25 +701,24 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      - uses: pnpm/action-setup@v4
-        with: { run_install: false }
-
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          cache: npm
 
-      - run: pnpm install --frozen-lockfile
+      - run: npm ci
 
       - name: Lint (Biome)
-        run: pnpm exec biome ci .
+        run: npx biome ci .
 
       - name: Typecheck
-        run: pnpm nx run-many -t typecheck
+        run: npx nx run-many -t typecheck
 
       - name: Build
-        run: pnpm nx run-many -t build
+        run: npx nx run-many -t build
 ```
+
+> `npm ci` is the CI-mode install: it bails if `package-lock.json` is out of sync with `package.json`. Always use it on CI; never `npm install`.
 
 ---
 
@@ -741,9 +736,9 @@ architecture. See `ARCHITECTURE.md` for the design and `plan/80-day-plan.md` for
 
 ```sh
 nvm use                 # Node 24
-pnpm install            # install workspace deps
+npm install            # install workspace deps
 make up                 # boot infrastructure (Day 1)
-pnpm nx run-many -t serve   # start the apps
+npx nx run-many -t serve   # start the apps
 ```
 
 ## Layout
@@ -775,7 +770,7 @@ gh pr checks
 
 ```sh
 node --version          # v24.x
-pnpm --version          # 10.33.x
+npm --version           # 10.x (bundled with Node 24)
 docker --version
 git --version
 gh --version
@@ -783,10 +778,10 @@ psql --version
 sops --version
 age --version
 
-pnpm install                          # clean
-pnpm exec biome ci .                  # exit 0
-pnpm nx run-many -t typecheck         # exit 0
-pnpm nx run-many -t build             # exit 0
+npm install                          # clean
+npx biome ci .                  # exit 0
+npx nx run-many -t typecheck         # exit 0
+npx nx run-many -t build             # exit 0
 
 ls apps/api apps/frontend apps/realtime apps/workers
 ls libs/contracts
@@ -805,15 +800,16 @@ gh pr checks                           # CI green
 | Symptom                                                    | Cause                                      | Fix                                                                          |
 | ---------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
 | `nvm: command not found` after install                     | Shell rc not sourcing nvm                  | `source ~/.zshrc` (or open a new terminal)                                   |
-| `pnpm: command not found`                                  | Corepack not enabled                       | `corepack enable && corepack prepare pnpm@10.33.0 --activate`                 |
-| `WARN Unsupported engine: wanted: node>=24` on `pnpm install` | Wrong Node in this shell                   | `nvm use` (reads `.nvmrc`)                                                   |
+| `npm: command not found`                                   | Node install incomplete                    | `nvm install 24 && nvm use 24` (npm ships with Node)                          |
+| `WARN Unsupported engine: wanted: node>=24` on `npm install` | Wrong Node in this shell                   | `nvm use` (reads `.nvmrc`)                                                   |
 | `permission denied (publickey)` from `git push`            | SSH key not added to GitHub or agent       | `gh ssh-key add ~/.ssh/id_ed25519.pub` and `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` |
-| `pnpm install` writes a different lockfile every run       | pnpm version drift across machines         | Pin via `packageManager` field; rerun `corepack prepare pnpm@<v> --activate`  |
-| `nx: command not found`                                    | Trying to run nx globally                  | Always use `pnpm nx ...` or `pnpm exec nx ...` from repo root                |
+| `npm install` writes a different lockfile every run        | Concurrent edits to `package.json` from different machines | Commit `package-lock.json`; coordinate dep changes through PRs                |
+| `nx: command not found`                                    | Trying to run nx globally                  | Always `npx nx ...` from repo root                                            |
 | Biome formats Nx-generated files differently than Nx       | Two formatters fighting                    | Pass `--skipFormat` to every Nx generator; let Biome own formatting           |
 | `gh auth login` browser flow stalls                        | SSH agent picked the wrong key              | `gh auth login --web --git-protocol ssh` and select your existing key         |
 | `sops --encrypt` says "no matching creation rule"          | `.sops.yaml` `path_regex` doesn't match     | Use `^infra/sops/.*\.enc\.(yaml\|json\|env)$` and place file accordingly      |
-| CI fails "lockfile mismatch"                               | Local `pnpm install` updated lockfile, not committed | `git add pnpm-lock.yaml && git commit --amend --no-edit && git push -f` (only on a feature branch) |
+| CI fails "lockfile mismatch"                               | Local `npm install` updated lockfile, not committed | `git add package-lock.json && git commit -m "chore: lockfile" && git push`     |
+| `npm ci` fails locally too                                  | Lockfile + package.json out of sync         | Delete `node_modules` + `package-lock.json`, run `npm install`, commit the new lockfile |
 
 ---
 
@@ -830,5 +826,5 @@ rm -rf node_modules .nx dist out-tsc coverage *.tsbuildinfo
 cd ..
 rm -rf syncra
 gh repo clone <you>/syncra
-cd syncra && pnpm install
+cd syncra && npm install
 ```
