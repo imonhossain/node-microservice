@@ -1,21 +1,20 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
     "outDir": "dist",
-    "rootDir": ".",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "types": ["node"],
     "lib": ["ES2022"],
-    "noEmit": true,
-    "composite": false,
-    "declaration": false,
-    "declarationMap": false,
+    "target": "ES2022",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
     "emitDeclarationOnly": false,
-    "noEmitOnError": false,
     "noUnusedLocals": false
   },
-  "include": ["src/**/*", "test/**/*", "bin/**/*", "drizzle.config.ts"]
+  "include": ["src/**/*"],
+  "exclude": ["dist", "test/**/*", "bin/**/*", "drizzle.config.ts"]
 }
