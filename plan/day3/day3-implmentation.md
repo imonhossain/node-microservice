@@ -8,6 +8,7 @@
 nvm use 24
 node --version                              # v24.x
 docker compose ps                           # Day-1 infra Up
+brew install postgresql
 psql 'postgresql://syncra:syncra@localhost:6432/syncra' -c '\dt'  # 4 tables + _drizzle_migrations
 npm test -w @syncra/db-kit                 # 3 passing
 ```
