@@ -11,6 +11,9 @@
     },
     {
       "path": "./libs/db-kit"
+    },
+    {
+      "path": "./libs/auth-kit"
     }
   ]
 }

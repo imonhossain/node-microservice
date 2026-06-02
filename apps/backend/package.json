@@ -9,14 +9,18 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
     "@syncra/db-kit": "^0.0.0",
+    "argon2": "^0.44.0",
+    "casbin": "^5.50.0",
     "cookie-parser": "^1.4.7",
     "jose": "^6.2.3",
+    "nodemailer": "^7.0.13",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.0",
     "tslib": "^2.3.0"
   },
   "devDependencies": {
     "@nestjs/testing": "^11.0.0",
-    "@types/cookie-parser": "^1.4.10"
+    "@types/cookie-parser": "^1.4.10",
+    "@types/nodemailer": "^8.0.0"
   }
 }

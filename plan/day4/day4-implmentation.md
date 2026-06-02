@@ -22,15 +22,15 @@ npm install --save-dev @types/nodemailer -w @syncra/backend
 # auth-kit lib (shared Casbin helpers)
 mkdir -p libs/auth-kit/src/casbin
 
-# Frontend: TanStack Router (if not already) + form/zod helpers
-npm install zod react-hook-form @hookform/resolvers -w @syncra/frontend
+# Frontend: TanStack Router + form/zod helpers
+npm install @tanstack/react-router zod react-hook-form @hookform/resolvers -w @syncra/frontend
 ```
 
 ---
 
 ## 2. Create `libs/auth-kit`
 
-`libs/auth-kit/package.json`:
+`libs/auth-kit/package.json` — same shape as db-kit on Day 2: composite build, conditional `exports`, and a `copy-assets` step for the Casbin `.conf` + `.csv` files (tsc doesn't copy non-TS files).
 
 ```json
 {
@@ -38,19 +38,61 @@ npm install zod react-hook-form @hookform/resolvers -w @syncra/frontend
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@org/source": "./src/index.ts",
+      "types":       "./dist/index.d.ts",
+      "default":     "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build":       "tsc && npm run copy-assets",
+    "copy-assets": "mkdir -p dist/casbin && cp src/casbin/model.conf src/casbin/policy.csv dist/casbin/"
+  },
   "dependencies": {
     "casbin": "^5.30.0"
   },
+  "peerDependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core":   "^11.0.0"
+  },
   "devDependencies": {
-    "typescript": "~5.6.0"
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core":   "^11.0.0",
+    "@types/express": "^5.0.0",
+    "typescript":     "~5.6.0"
   }
 }
 ```
 
-`libs/auth-kit/tsconfig.json` — copy from `libs/db-kit/tsconfig.json` (same overrides: `types: ["node"]`, `composite: false`, etc.).
+`libs/auth-kit/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": false,
+    "noUnusedLocals": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist"]
+}
+```
 
 `libs/auth-kit/src/casbin/model.conf`:
 
@@ -120,8 +162,8 @@ export const RequireAction = (action: string) => SetMetadata(REQUIRE_ACTION_KEY,
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
-import { REQUIRE_ACTION_KEY } from './require-action.decorator';
-import { can } from './enforcer';
+import { REQUIRE_ACTION_KEY } from './require-action.decorator.js';
+import { can } from './enforcer.js';
 
 @Injectable()
 export class ActionGuard implements CanActivate {
@@ -144,16 +186,18 @@ export class ActionGuard implements CanActivate {
 `libs/auth-kit/src/index.ts`:
 
 ```ts
-export * from './enforcer';
-export * from './require-action.decorator';
-export * from './action.guard';
+export * from './enforcer.js';
+export * from './require-action.decorator.js';
+export * from './action.guard.js';
 ```
 
-Install + smoke test:
+Install + smoke test + build:
 
 ```sh
 npm install
-npm exec --workspace=@syncra/auth-kit -- tsc --noEmit
+npm exec --workspace=@syncra/auth-kit -- tsc --noEmit   # typecheck
+npm run build -w @syncra/auth-kit                       # emit dist/ + copy casbin assets
+ls libs/auth-kit/dist/casbin/                            # model.conf, policy.csv
 ```
 
 ---
@@ -239,9 +283,12 @@ export async function verifyToken(hash: string, raw: string): Promise<boolean> {
 `apps/backend/src/modules/workspace/workspace.service.ts`:
 
 ```ts
-import { Injectable, ConflictException, NotFoundException, GoneException } from '@nestjs/common';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
-import { appDb, schema } from '@syncra/db-kit';
+import { Injectable, NotFoundException, GoneException } from '@nestjs/common';
+// IMPORTANT: import drizzle helpers (and, eq, gt, isNull, sql, …) THROUGH db-kit.
+// Importing from 'drizzle-orm' directly triggers the dual-package hazard:
+// backend is CJS, db-kit is ESM → two distinct SQL<unknown> types.
+// (Set on Day 3 — same rule for every new service from here on.)
+import { appDb, schema, and, eq, gt, isNull, sql } from '@syncra/db-kit';
 import { randomUUID } from 'node:crypto';
 import { MailService } from '../mail/mail.service';
 import { generateRawToken, hashToken, verifyToken } from './invitation-token';
@@ -584,6 +631,65 @@ export class AppModule {}
 
 > If you're using TanStack Router file-based routes, paths are `src/routes/...`. If not, adapt to your router. The hooks below are framework-agnostic.
 
+### 8.0 TanStack Router file naming — the prefixes you'll see
+
+File-based routing means the **directory + filename** determines the URL. TanStack Router uses three special prefix conventions you'll see repeatedly in Syncra:
+
+| Pattern             | What it means                                                                                                                                                | Example                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| **`_foo.tsx`** (leading underscore) | A **pathless layout route**. The `_` is a hint to the router: "this is a layout wrapper, do NOT add `/foo` to the URL". Use it to share a layout, guards, or `beforeLoad` logic across child routes without polluting URLs. | `_app.tsx` → no URL segment; child `_app/index.tsx` maps to `/`. `_onboarding/workspace.tsx` maps to `/onboarding/workspace`, NOT `/_onboarding/workspace`. |
+| **`$foo.tsx`** (leading dollar)     | A **dynamic path parameter**. `$slug` matches any URL segment and exposes it as `params.slug` via `useParams()`. The `$` is the file-system-safe way to write what URL routing would call `:slug`. | `$token.tsx` matches `/foo`, `/r9-jK_3xMz`, etc.; inside the component: `const { token } = useParams({ from: '/invite/$token' })`. |
+| **`__root.tsx`** (double underscore) | The **outermost layout** — wraps every route in the app. Defines the shell `<Outlet />`, providers, error boundary. There's exactly one per app. | Always at `src/routes/__root.tsx`. |
+| **`index.tsx`**                     | The **default child** of a directory. Maps to the directory's own path with no extra segment.                                                                | `_onboarding/index.tsx` maps to `/onboarding`. `_app/w/$slug/index.tsx` maps to `/w/acme/`.                          |
+
+#### Walk-through of the routes Day 4 uses
+
+```
+src/routes/
+├── __root.tsx                          → wraps EVERY page (providers, layout shell)
+├── _auth/
+│   └── login.tsx                       → /login         (auth-only layout; guard: redirect to / if already signed in)
+├── _onboarding/
+│   ├── workspace.tsx                   → /onboarding/workspace
+│   └── invite.tsx                      → /onboarding/invite
+├── invite/
+│   └── $token.tsx                      → /invite/r9-jK_3xMz...        (the token is the URL param)
+└── _app/                               → no URL segment; guards live here (signed in? has membership?)
+    ├── index.tsx                       → /
+    └── w/
+        └── $slug/                      → /w/acme         (slug = "acme")
+            ├── index.tsx               → /w/acme         (workspace home)
+            └── members.tsx             → /w/acme/members
+```
+
+The mental model:
+
+- **Underscore = "I'm here for structure, not for URL"** — layouts, guards, grouping.
+- **Dollar = "I'm a wildcard segment"** — bind to a value with `useParams`.
+- **Combine them**: `_app/w/$slug/members.tsx` →
+  - `_app` adds nothing to the URL but wraps children in the authenticated shell.
+  - `w` adds `/w`.
+  - `$slug` adds a dynamic segment.
+  - `members` adds `/members`.
+  - Final URL: `/w/<slug>/members`.
+
+#### Why bother with the underscore layout pattern?
+
+Without `_app`, every authenticated page would need its own `beforeLoad` guard checking session + workspace membership. With `_app`, you write it ONCE on the parent and every child inherits it. Same for `_auth` (redirect-if-signed-in) and `_onboarding` (no membership required, but must be signed in).
+
+#### The `from` argument in `useParams` / `useSearch`
+
+You'll see things like:
+
+```ts
+const { token } = useParams({ from: '/invite/$token' });
+const search = useSearch({ from: '/_onboarding/invite' });
+```
+
+The `from` is the **route id** (which mirrors the file path). It tells TanStack Router which route's params/search you mean — important because route ids are typed, so `params.token` is `string`, not `string | undefined`. If you omit `from`, the types widen.
+
+> **More on this in Day 6**, where we wire `__root.tsx`, the guard chain, and the full file-based router setup. Today we just write the route files; Day 6 plugs them into the router.
+
 `apps/frontend/src/hooks/use-workspaces.ts`:
 
 ```ts
@@ -895,6 +1001,9 @@ npx nx run frontend:typecheck
 | Symptom                                                                | Cause                                                                | Fix                                                                                                  |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `Cannot find module '@syncra/auth-kit'`                                 | Lib not in workspace yet                                              | Confirm root `package.json` `workspaces` includes `"libs/*"`; `npm install` from root              |
+| `tsc --noEmit` on auth-kit: `Cannot find module './require-action.decorator'` or `Relative import paths need explicit file extensions` | NodeNext requires `.js` extensions on relative imports, even from `.ts` files | Every relative import inside `libs/auth-kit/src/*.ts` ends in `.js` (e.g. `from './enforcer.js'`)   |
+| Casbin throws `ENOENT` for `model.conf` / `policy.csv` at runtime       | `tsc` doesn't copy non-TS assets to `dist/`                          | Add a `copy-assets` step to the build: `cp src/casbin/model.conf src/casbin/policy.csv dist/casbin/`  |
+| `Type 'SQL<unknown>' is not assignable to type 'SQL<unknown>'` in `workspace.service.ts` (or any backend service) | Dual-package hazard — backend (CJS) loaded `drizzle-orm` separately from db-kit (ESM) | Import drizzle helpers THROUGH `@syncra/db-kit`: `import { appDb, schema, eq, and, sql } from '@syncra/db-kit'`. **Never `from 'drizzle-orm'` in app code.** (Rule set on Day 3.) |
 | `new row violates row-level security policy for table "workspaces"`     | The `WITH CHECK` clause requires `app.workspace_id == new.id`; we set it AFTER inserting | Pre-generate the UUID and `set_config('app.workspace_id', newId, true)` BEFORE the INSERT          |
 | Invitation accept returns "not found" even with a valid token           | Token expired, or already accepted                                    | Check `expires_at > now()` and `accepted_at IS NULL` in the candidate scan                          |
 | Mailpit shows zero emails                                               | SMTP host/port wrong, or `nodemailer` can't reach `localhost:1025`    | `docker compose ps mailpit` → confirm port 1025; `SMTP_HOST=localhost SMTP_PORT=1025` in `.env`     |

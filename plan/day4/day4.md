@@ -399,6 +399,7 @@ We covered this in `ARCHITECTURE.md §16.5.4` if you want the full chain.
 | Forget the `?token=` survives `/login` redirect                                | Bob clicks invite → /login → signs in → lands on `/`, invitation forgotten                       | Store the token in `next` query param; restore after sign-in                                                       |
 | Use `email` as the global identifier for invitations                          | Carol signs up with a new email (gmail vs work) and can't be matched                              | Bind to email *at invite time*. On accept, JIT-create user even if a row exists under a different email.            |
 | Send the email synchronously inside the request                                | API endpoint timeouts when SMTP is slow                                                          | Enqueue (BullMQ on Day 30) or fire-and-forget in dev. Don't block the response.                                    |
+| `import { eq, and, sql } from 'drizzle-orm'` directly in a backend service     | Dual-package hazard — backend (CJS) sees a different `SQL<unknown>` from db-kit (ESM)            | Always `import { ..., eq, and, sql } from '@syncra/db-kit'`. Rule set on Day 3; applies to every new service from here on. |
 
 ---
 
