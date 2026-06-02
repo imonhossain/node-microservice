@@ -2,15 +2,26 @@
   "name": "@syncra/backend",
   "version": "0.0.1",
   "private": true,
+  "type": "commonjs",
   "dependencies": {
+    "@auth/core": "^0.41.2",
+    "@auth/express": "^0.12.2",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "@syncra/db-kit": "^0.0.0",
+    "argon2": "^0.44.0",
+    "casbin": "^5.50.0",
+    "cookie-parser": "^1.4.7",
+    "jose": "^6.2.3",
+    "nodemailer": "^7.0.13",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.0",
     "tslib": "^2.3.0"
   },
   "devDependencies": {
-    "@nestjs/testing": "^11.0.0"
+    "@nestjs/testing": "^11.0.0",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/nodemailer": "^8.0.0"
   }
 }

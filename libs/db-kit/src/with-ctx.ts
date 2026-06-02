@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { appDb } from './client';
+import { appDb } from './client.js';
 
 export type Ctx = { workspaceId: string; userId: string };
 

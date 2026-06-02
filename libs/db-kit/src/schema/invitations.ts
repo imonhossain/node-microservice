@@ -6,9 +6,9 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { users } from './users';
-import { workspaces } from './workspaces';
-import { workspaceRole } from './enums';
+import { users } from './users.js';
+import { workspaces } from './workspaces.js';
+import { workspaceRole } from './enums.js';
 
 export const invitations = pgTable(
   'invitations',

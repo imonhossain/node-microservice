@@ -1,7 +1,7 @@
 import { pgTable, uuid, timestamp, primaryKey } from 'drizzle-orm/pg-core';
-import { users } from './users';
-import { workspaces } from './workspaces';
-import { workspaceRole } from './enums';
+import { users } from './users.js';
+import { workspaces } from './workspaces.js';
+import { workspaceRole } from './enums.js';
 
 export const workspaceMembers = pgTable(
   'workspace_members',

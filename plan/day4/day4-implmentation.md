@@ -22,15 +22,15 @@ npm install --save-dev @types/nodemailer -w @syncra/backend
 # auth-kit lib (shared Casbin helpers)
 mkdir -p libs/auth-kit/src/casbin
 
-# Frontend: TanStack Router (if not already) + form/zod helpers
-npm install zod react-hook-form @hookform/resolvers -w @syncra/frontend
+# Frontend: TanStack Router + form/zod helpers
+npm install @tanstack/react-router zod react-hook-form @hookform/resolvers -w @syncra/frontend
 ```
 
 ---
 
 ## 2. Create `libs/auth-kit`
 
-`libs/auth-kit/package.json`:
+`libs/auth-kit/package.json` — same shape as db-kit on Day 2: composite build, conditional `exports`, and a `copy-assets` step for the Casbin `.conf` + `.csv` files (tsc doesn't copy non-TS files).
 
 ```json
 {
@@ -38,19 +38,61 @@ npm install zod react-hook-form @hookform/resolvers -w @syncra/frontend
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@org/source": "./src/index.ts",
+      "types":       "./dist/index.d.ts",
+      "default":     "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build":       "tsc && npm run copy-assets",
+    "copy-assets": "mkdir -p dist/casbin && cp src/casbin/model.conf src/casbin/policy.csv dist/casbin/"
+  },
   "dependencies": {
     "casbin": "^5.30.0"
   },
+  "peerDependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core":   "^11.0.0"
+  },
   "devDependencies": {
-    "typescript": "~5.6.0"
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core":   "^11.0.0",
+    "@types/express": "^5.0.0",
+    "typescript":     "~5.6.0"
   }
 }
 ```
 
-`libs/auth-kit/tsconfig.json` — copy from `libs/db-kit/tsconfig.json` (same overrides: `types: ["node"]`, `composite: false`, etc.).
+`libs/auth-kit/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": false,
+    "noUnusedLocals": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist"]
+}
+```
 
 `libs/auth-kit/src/casbin/model.conf`:
 
@@ -68,7 +110,7 @@ g = _, _
 e = some(where (p.eft == allow))
 
 [matchers]
-m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && r.act == p.act
+m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && keyMatch(r.act, p.act)
 ```
 
 `libs/auth-kit/src/casbin/policy.csv`:
@@ -87,16 +129,47 @@ p, viewer, workspace/*, workspace:read
 
 `libs/auth-kit/src/enforcer.ts`:
 
+> The model + policy are inlined as string constants below, not loaded from disk. Reason: the backend bundles `auth-kit` into webpack's `main.js`, so the `casbin/*.conf` files no longer live next to `enforcer.js` at runtime (and `import.meta.dirname` breaks in the CJS bundle). Keeping the strings here means the enforcer works regardless of how it's deployed. The matching files in `src/casbin/` stay as the editable source of truth for tooling like Casbin's online editor.
+
 ```ts
-import { newEnforcer, Enforcer } from 'casbin';
-import { join } from 'node:path';
+import { Enforcer, Model, StringAdapter, newEnforcer, newModel } from 'casbin';
+
+const MODEL = `
+[request_definition]
+r = sub, obj, act
+
+[policy_definition]
+p = sub, obj, act
+
+[role_definition]
+g = _, _
+
+[policy_effect]
+e = some(where (p.eft == allow))
+
+[matchers]
+m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && keyMatch(r.act, p.act)
+`.trim();
+
+const POLICY = `
+p, owner,  workspace/*, *
+p, admin,  workspace/*, workspace:read
+p, admin,  workspace/*, workspace:rename
+p, admin,  workspace/*, workspace:invite
+p, admin,  workspace/*, member:list
+p, admin,  workspace/*, member:remove
+p, member, workspace/*, workspace:read
+p, member, workspace/*, member:list
+p, viewer, workspace/*, workspace:read
+`.trim();
 
 let enforcer: Enforcer | null = null;
 
 export async function getEnforcer(): Promise<Enforcer> {
   if (enforcer) return enforcer;
-  const dir = join(import.meta.dirname, 'casbin');
-  enforcer = await newEnforcer(join(dir, 'model.conf'), join(dir, 'policy.csv'));
+  const model: Model = newModel(MODEL);
+  const adapter = new StringAdapter(POLICY);
+  enforcer = await newEnforcer(model, adapter);
   return enforcer;
 }
 
@@ -120,8 +193,8 @@ export const RequireAction = (action: string) => SetMetadata(REQUIRE_ACTION_KEY,
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
-import { REQUIRE_ACTION_KEY } from './require-action.decorator';
-import { can } from './enforcer';
+import { REQUIRE_ACTION_KEY } from './require-action.decorator.js';
+import { can } from './enforcer.js';
 
 @Injectable()
 export class ActionGuard implements CanActivate {
@@ -144,16 +217,107 @@ export class ActionGuard implements CanActivate {
 `libs/auth-kit/src/index.ts`:
 
 ```ts
-export * from './enforcer';
-export * from './require-action.decorator';
-export * from './action.guard';
+export * from './enforcer.js';
+export * from './require-action.decorator.js';
+export * from './action.guard.js';
 ```
 
-Install + smoke test:
+Install + smoke test + build:
 
 ```sh
 npm install
-npm exec --workspace=@syncra/auth-kit -- tsc --noEmit
+npm exec --workspace=@syncra/auth-kit -- tsc --noEmit   # typecheck
+npm run build -w @syncra/auth-kit                       # emit dist/ + copy casbin assets
+ls libs/auth-kit/dist/casbin/                            # model.conf, policy.csv
+```
+
+---
+
+## 2.5 Backend webpack config — bundle workspace siblings + lock CJS
+
+Before the backend can boot with `@syncra/auth-kit` as a dependency, two backend-app tweaks are needed. These are one-time fixes that pay off for every future lib we add.
+
+### Mark the backend as CJS
+
+Webpack with `target: 'node'` outputs CJS-style bundles, but Node 24 auto-flips a `.js` file to ESM if it sees `import`/`export` syntax (which bundled ESM libs contain). Pin it:
+
+`apps/backend/package.json` — add the `type` field:
+
+```json
+{
+  "name": "@syncra/backend",
+  "type": "commonjs",
+  ...
+}
+```
+
+### Tell webpack to bundle `@syncra/*` into `main.js`
+
+`apps/backend/webpack.config.js`:
+
+```js
+const { NxAppWebpackPlugin } = require('@nx/webpack/app-plugin');
+const { join } = require('path');
+
+/**
+ * Wraps the externals NxAppWebpackPlugin installs and short-circuits any
+ * `@syncra/*` import to "bundle" (so it ends up inside main.js).
+ *
+ * Why: default `target: 'node'` externalises every node_modules dep. At
+ * runtime `@nx/js:node` rewrites the require to <repoRoot>/dist/libs/<name>
+ * — a path that doesn't exist because our libs build into libs/<name>/dist.
+ * Bundling workspace siblings sidesteps the runtime path mismatch entirely.
+ */
+class BundleSyncraLibsPlugin {
+  apply(compiler) {
+    compiler.hooks.afterEnvironment.tap('BundleSyncraLibsPlugin', () => {
+      const original = compiler.options.externals;
+      const wrap = (entry) => {
+        if (typeof entry !== 'function') return entry;
+        return function (ctx, callback) {
+          if (ctx.request && ctx.request.startsWith('@syncra/')) {
+            return callback();      // bundle
+          }
+          return entry(ctx, callback); // delegate to webpack-node-externals
+        };
+      };
+      compiler.options.externals = Array.isArray(original)
+        ? original.map(wrap)
+        : wrap(original);
+    });
+  }
+}
+
+module.exports = {
+  output: {
+    path: join(__dirname, 'dist'),
+    clean: true,
+    ...(process.env.NODE_ENV !== 'production' && {
+      devtoolModuleFilenameTemplate: '[absolute-resource-path]',
+    }),
+  },
+  plugins: [
+    new NxAppWebpackPlugin({
+      target: 'node',
+      compiler: 'tsc',
+      main: './src/main.ts',
+      tsConfig: './tsconfig.app.json',
+      assets: ['./src/assets'],
+      optimization: false,
+      outputHashing: 'none',
+      generatePackageJson: false,
+      sourceMap: true,
+    }),
+    new BundleSyncraLibsPlugin(),
+  ],
+};
+```
+
+Verify the backend boots:
+
+```sh
+npx nx serve backend
+curl -s -i http://localhost:3000/api/me | head -3   # → 401 Unauthorized (correct — no cookie)
 ```
 
 ---
@@ -238,10 +402,25 @@ export async function verifyToken(hash: string, raw: string): Promise<boolean> {
 
 `apps/backend/src/modules/workspace/workspace.service.ts`:
 
+> **Two connections, two purposes — get this right or weird bugs follow.**
+>
+> | Use | Connection | RLS? |
+> | --- | --- | --- |
+> | Per-tenant reads/writes inside a request handler (after we know which workspace) | `appDb` (`app_user`, NO BYPASSRLS) | Yes — `withCtx` sets `app.workspace_id` first |
+> | **Discovery** queries that have to span tenants (slug → workspace, list workspaces for a user) | `db` (superuser, BYPASSRLS) | No — bypassed |
+>
+> Discovery queries can't set `app.workspace_id` because finding it is the whole point of the query. If you route those through `appDb`, RLS hides every row and the lookup silently returns `null` / `[]` — `isSlugAvailable` falsely reports "available", `findBySlug` 404s known workspaces, `listForUser` returns an empty list and the user is stuck in onboarding forever.
+
 ```ts
-import { Injectable, ConflictException, NotFoundException, GoneException } from '@nestjs/common';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
-import { appDb, schema } from '@syncra/db-kit';
+import { Injectable, NotFoundException, GoneException } from '@nestjs/common';
+// IMPORTANT: import drizzle helpers (and, eq, gt, isNull, sql, …) THROUGH db-kit.
+// Importing from 'drizzle-orm' directly triggers the dual-package hazard:
+// backend is CJS, db-kit is ESM → two distinct SQL<unknown> types.
+// (Set on Day 3 — same rule for every new service from here on.)
+//
+// `db`     = superuser, bypasses RLS. Use for cross-tenant discovery.
+// `appDb`  = app_user, RLS enforced. Use for per-tenant work inside withCtx().
+import { appDb, db, schema, and, eq, gt, isNull, sql } from '@syncra/db-kit';
 import { randomUUID } from 'node:crypto';
 import { MailService } from '../mail/mail.service';
 import { generateRawToken, hashToken, verifyToken } from './invitation-token';
@@ -251,7 +430,10 @@ export class WorkspaceService {
   constructor(private readonly mail: MailService) {}
 
   async isSlugAvailable(slug: string): Promise<boolean> {
-    const existing = await appDb.query.workspaces.findFirst({
+    // Discovery — must see every tenant's workspaces. Without bypass-RLS the
+    // result is always `true` (RLS hides existing rows) and the unique index
+    // is the only thing catching collisions at insert time.
+    const existing = await db.query.workspaces.findFirst({
       where: eq(schema.workspaces.slug, slug),
     });
     return !existing;
@@ -283,7 +465,10 @@ export class WorkspaceService {
   }
 
   async listForUser(userId: string) {
-    return appDb
+    // Cross-tenant by design: a user belongs to many workspaces. We trust the
+    // userId filter (verified session) and bypass RLS so the JOIN can span
+    // every workspace_members row the user owns.
+    return db
       .select({
         id: schema.workspaces.id,
         slug: schema.workspaces.slug,
@@ -296,7 +481,10 @@ export class WorkspaceService {
   }
 
   async findBySlug(slug: string) {
-    return appDb.query.workspaces.findFirst({ where: eq(schema.workspaces.slug, slug) });
+    // Discovery — the workspace_id we'd set for RLS is what we're trying to
+    // find. Bypass RLS for the lookup; membership is asserted separately by
+    // WorkspaceMiddleware before any per-tenant work happens.
+    return db.query.workspaces.findFirst({ where: eq(schema.workspaces.slug, slug) });
   }
 
   async getMembership(workspaceId: string, userId: string) {
@@ -582,7 +770,279 @@ export class AppModule {}
 
 ## 8. Frontend — Onboarding routes
 
-> If you're using TanStack Router file-based routes, paths are `src/routes/...`. If not, adapt to your router. The hooks below are framework-agnostic.
+We switch to **TanStack Router file-based routing** today. Routes live in `src/routes/`; a Vite plugin auto-generates `routeTree.gen.ts` from that tree on every save.
+
+### 8.-1 Install the router plugin + devtools
+
+```sh
+npm install --save-dev @tanstack/router-plugin -w @syncra/frontend
+npm install @tanstack/router-devtools -w @syncra/frontend
+```
+
+Wire it into `apps/frontend/vite.config.mts`:
+
+```ts
+import { TanStackRouterVite } from '@tanstack/router-plugin/vite';
+
+// inside defineConfig:
+plugins: [
+  // Generate src/routeTree.gen.ts from src/routes/. MUST run BEFORE react().
+  TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
+  react(),
+],
+```
+
+The plugin watches `src/routes/` and writes `src/routeTree.gen.ts` whenever you add, rename, or delete a route file. The generated file is what `createRouter({ routeTree })` consumes.
+
+### 8.-0.5 The router-level wiring (`__root.tsx` + `app.tsx`)
+
+`apps/frontend/src/routes/__root.tsx` — the outermost layout. Carries the `QueryClient` in router context so `beforeLoad` guards can read it.
+
+```tsx
+import { Outlet, createRootRouteWithContext } from '@tanstack/react-router';
+import type { QueryClient } from '@tanstack/react-query';
+
+export interface RouterContext { queryClient: QueryClient }
+
+export const Route = createRootRouteWithContext<RouterContext>()({
+  component: () => <Outlet />,
+});
+```
+
+`apps/frontend/src/app/app.tsx` — replaces the Day 3 minimal shell:
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { RouterProvider, createRouter } from '@tanstack/react-router';
+import { useState } from 'react';
+import { routeTree } from '../routeTree.gen';
+
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: ReturnType<typeof buildRouter>;
+  }
+}
+
+function buildRouter(queryClient: QueryClient) {
+  return createRouter({
+    routeTree,
+    context: { queryClient },
+    defaultPreload: 'intent',
+  });
+}
+
+export function App() {
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  }));
+  const [router] = useState(() => buildRouter(queryClient));
+  return (
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  );
+}
+```
+
+### 8.-0.25 The two layout guards (this is where the auto-redirect lives)
+
+`apps/frontend/src/routes/_app.tsx` — wraps everything that requires a workspace. **This is the guard that redirects to `/onboarding/workspace`** when the user has no memberships.
+
+```tsx
+import { Link, Outlet, createFileRoute, redirect } from '@tanstack/react-router';
+import { WorkspaceSwitcher } from '../components/workspace-switcher';
+import { useMe } from '../hooks/use-me';
+import { useWorkspaces } from '../hooks/use-workspaces';
+
+export const Route = createFileRoute('/_app')({
+  beforeLoad: async ({ context, location }) => {
+    // 1) signed-in? → if not, send to /login
+    const me = await context.queryClient.fetchQuery({
+      queryKey: ['me'],
+      queryFn: async () => {
+        const r = await fetch('/api/me', { credentials: 'include' });
+        if (r.status === 401) return null;
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      },
+      staleTime: 30_000,
+    });
+    if (!me) throw redirect({ to: '/login' });
+
+    // 2) has memberships? → if not, force onboarding
+    const memberships = await context.queryClient.fetchQuery({
+      queryKey: ['workspaces'],
+      queryFn: async () => {
+        const r = await fetch('/api/workspaces', { credentials: 'include' });
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      },
+      staleTime: 30_000,
+    });
+    if (memberships.length === 0 && !location.pathname.startsWith('/onboarding')) {
+      throw redirect({ to: '/onboarding/workspace' });
+    }
+  },
+  component: AppShell,
+});
+
+function AppShell() {
+  const { data: me } = useMe();
+  const { data: workspaces } = useWorkspaces();
+  const activeWs = workspaces?.[0];
+
+  if (!me) return null;
+
+  return (
+    <div>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 24px', borderBottom: '1px solid #e5e7eb', background: 'white' }}>
+        <Link to="/" style={{ fontWeight: 700, fontSize: 18, textDecoration: 'none', color: '#111' }}>
+          Syncra
+        </Link>
+        <WorkspaceSwitcher />
+        {activeWs && (
+          <nav style={{ display: 'flex', gap: 16, marginLeft: 24 }}>
+            <Link to="/w/$slug" params={{ slug: activeWs.slug }} style={{ color: '#444', textDecoration: 'none' }}>Overview</Link>
+            <Link to="/w/$slug/members" params={{ slug: activeWs.slug }} style={{ color: '#444', textDecoration: 'none' }}>Members</Link>
+          </nav>
+        )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {me.avatarUrl && <img src={me.avatarUrl} alt="" width={32} height={32} style={{ borderRadius: '50%' }} />}
+          <div style={{ fontSize: 14 }}>
+            <div style={{ fontWeight: 500 }}>{me.displayName ?? me.email}</div>
+            <div style={{ color: '#666', fontSize: 12 }}>{me.email}</div>
+          </div>
+          <form method="post" action="/api/auth/signout">
+            <button type="submit" style={{ padding: '6px 12px', background: 'white', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }}>
+              Sign out
+            </button>
+          </form>
+        </div>
+      </header>
+      <main style={{ padding: 24 }}><Outlet /></main>
+    </div>
+  );
+}
+```
+
+`apps/frontend/src/routes/onboarding.tsx` — wraps onboarding pages. Requires sign-in but **not** an existing workspace (otherwise the `/_app` guard would loop back here forever).
+
+> ⚠️ **Note**: this folder is `onboarding/` **without** the underscore, because we want `/onboarding/workspace` and `/onboarding/invite` in the URL. A pathless `_onboarding/` would put children at `/workspace` and `/invite` — not what we want, and `/invite` would clash with the `invite/$token` route.
+
+```tsx
+import { Outlet, createFileRoute, redirect } from '@tanstack/react-router';
+
+export const Route = createFileRoute('/onboarding')({
+  beforeLoad: async ({ context }) => {
+    const me = await context.queryClient.fetchQuery({
+      queryKey: ['me'],
+      queryFn: async () => {
+        const r = await fetch('/api/me', { credentials: 'include' });
+        if (r.status === 401) return null;
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      },
+      staleTime: 30_000,
+    });
+    if (!me) throw redirect({ to: '/login' });
+  },
+  component: () => <div style={{ padding: 24 }}><Outlet /></div>,
+});
+```
+
+`apps/frontend/src/routes/_auth.tsx` — for `/login`. Sends signed-in users to `/`.
+
+```tsx
+import { Outlet, createFileRoute, redirect } from '@tanstack/react-router';
+
+export const Route = createFileRoute('/_auth')({
+  beforeLoad: async ({ context }) => {
+    const me = await context.queryClient.fetchQuery({
+      queryKey: ['me'],
+      queryFn: async () => {
+        const r = await fetch('/api/me', { credentials: 'include' });
+        if (r.status === 401) return null;
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      },
+      staleTime: 30_000,
+    });
+    if (me) throw redirect({ to: '/' });
+  },
+  component: () => <Outlet />,
+});
+```
+
+> The `/login` page itself moves from `apps/frontend/src/app/login.tsx` into `apps/frontend/src/routes/_auth/login.tsx`, with `export const Route = createFileRoute('/_auth/login')({ component: LoginPage })` added at the top.
+
+### 8.0 TanStack Router file naming — the prefixes you'll see
+
+### 8.0 TanStack Router file naming — the prefixes you'll see
+
+File-based routing means the **directory + filename** determines the URL. TanStack Router uses three special prefix conventions you'll see repeatedly in Syncra:
+
+| Pattern             | What it means                                                                                                                                                | URL example                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| **`_foo.tsx`** (leading underscore) | A **pathless layout route**. The `_` says "this is a layout wrapper; do NOT add `/foo` to the URL". Children of `_foo/` appear at the parent's URL. Use it for guards / layouts when you want the URL clean. | `_app.tsx` → no URL segment; child `_app/index.tsx` maps to `/`; `_app/w/$slug/members.tsx` maps to `/w/<slug>/members`. |
+| **`foo.tsx` + `foo/` dir** (no underscore) | A layout route that DOES contribute a URL segment. Children appear under `/foo/...`. | `onboarding.tsx` + `onboarding/workspace.tsx` → `/onboarding/workspace`. |
+| **`$foo.tsx`** (leading dollar)     | A **dynamic path parameter**. `$slug` matches any URL segment and exposes it as `params.slug` via `useParams()`. The `$` is the file-system-safe way to write what URL routing would call `:slug`. | `$token.tsx` matches `/foo`, `/r9-jK_3xMz`, etc.; inside the component: `const { token } = Route.useParams()`. |
+| **`__root.tsx`** (double underscore) | The **outermost layout** — wraps every route in the app. Defines the shell `<Outlet />`, providers, error boundary. There's exactly one per app. | Always at `src/routes/__root.tsx`. |
+| **`index.tsx`**                     | The **default child** of a directory. Maps to the directory's own path with no extra segment.                                                                | `onboarding/index.tsx` would map to `/onboarding`. `_app/w/$slug/index.tsx` maps to `/w/<slug>`.                       |
+
+#### The trap I want you to remember
+
+> If a directory or file starts with `_`, **the URL drops that segment**. If not, **the URL keeps it**.
+>
+> So `_onboarding/workspace.tsx` is `/workspace`, but `onboarding/workspace.tsx` is `/onboarding/workspace`. Naming this wrong is the most common cause of "Not Found" in dev.
+
+#### Walk-through of the routes Day 4 uses
+
+```
+src/routes/
+├── __root.tsx                          → wraps EVERY page (providers, layout shell)
+├── _auth/
+│   └── login.tsx                       → /login         (auth-only layout; guard: redirect to / if already signed in)
+├── onboarding.tsx                      → wraps onboarding pages with a sign-in-required guard
+├── onboarding/
+│   ├── workspace.tsx                   → /onboarding/workspace
+│   └── invite.tsx                      → /onboarding/invite
+├── invite/
+│   └── $token.tsx                      → /invite/r9-jK_3xMz...        (the token is the URL param)
+└── _app/                               → no URL segment; guards live here (signed in? has membership?)
+    ├── index.tsx                       → /
+    └── w/
+        └── $slug/                      → /w/acme         (slug = "acme")
+            ├── index.tsx               → /w/acme         (workspace home)
+            └── members.tsx             → /w/acme/members
+```
+
+The mental model:
+
+- **Underscore = "I'm here for structure, not for URL"** — layouts, guards, grouping.
+- **Dollar = "I'm a wildcard segment"** — bind to a value with `useParams`.
+- **Combine them**: `_app/w/$slug/members.tsx` →
+  - `_app` adds nothing to the URL but wraps children in the authenticated shell.
+  - `w` adds `/w`.
+  - `$slug` adds a dynamic segment.
+  - `members` adds `/members`.
+  - Final URL: `/w/<slug>/members`.
+
+#### Why bother with the underscore layout pattern?
+
+Without `_app`, every authenticated page would need its own `beforeLoad` guard checking session + workspace membership. With `_app`, you write it ONCE on the parent and every child inherits it. Same for `_auth` (redirect-if-signed-in) and `onboarding` (no membership required, but must be signed in).
+
+#### The `from` argument in `useParams` / `useSearch`
+
+You'll see things like:
+
+```ts
+const { token } = useParams({ from: '/invite/$token' });
+const search = useSearch({ from: '/onboarding/invite' });
+```
+
+The `from` is the **route id** (which mirrors the file path). It tells TanStack Router which route's params/search you mean — important because route ids are typed, so `params.token` is `string`, not `string | undefined`. If you omit `from`, the types widen.
+
+> **More on this in Day 6**, where we wire `__root.tsx`, the guard chain, and the full file-based router setup. Today we just write the route files; Day 6 plugs them into the router.
 
 `apps/frontend/src/hooks/use-workspaces.ts`:
 
@@ -604,7 +1064,7 @@ export function useWorkspaces() {
 }
 ```
 
-`apps/frontend/src/routes/_onboarding/workspace.tsx`:
+`apps/frontend/src/routes/onboarding/workspace.tsx`:
 
 ```tsx
 import { useState, useEffect } from 'react';
@@ -669,7 +1129,7 @@ function slugify(s: string) {
 }
 ```
 
-`apps/frontend/src/routes/_onboarding/invite.tsx`:
+`apps/frontend/src/routes/onboarding/invite.tsx`:
 
 ```tsx
 import { useState } from 'react';
@@ -677,7 +1137,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router';
 
 export function OnboardingInvitePage() {
   const navigate = useNavigate();
-  const search = useSearch({ from: '/_onboarding/invite' }) as { slug: string };
+  const search = useSearch({ from: '/onboarding/invite' }) as { slug: string };
   const [emails, setEmails] = useState<string[]>(['']);
   const [busy, setBusy] = useState(false);
 
@@ -895,6 +1355,9 @@ npx nx run frontend:typecheck
 | Symptom                                                                | Cause                                                                | Fix                                                                                                  |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `Cannot find module '@syncra/auth-kit'`                                 | Lib not in workspace yet                                              | Confirm root `package.json` `workspaces` includes `"libs/*"`; `npm install` from root              |
+| `tsc --noEmit` on auth-kit: `Cannot find module './require-action.decorator'` or `Relative import paths need explicit file extensions` | NodeNext requires `.js` extensions on relative imports, even from `.ts` files | Every relative import inside `libs/auth-kit/src/*.ts` ends in `.js` (e.g. `from './enforcer.js'`)   |
+| Casbin throws `ENOENT` for `model.conf` / `policy.csv` at runtime       | `tsc` doesn't copy non-TS assets to `dist/`                          | Add a `copy-assets` step to the build: `cp src/casbin/model.conf src/casbin/policy.csv dist/casbin/`  |
+| `Type 'SQL<unknown>' is not assignable to type 'SQL<unknown>'` in `workspace.service.ts` (or any backend service) | Dual-package hazard — backend (CJS) loaded `drizzle-orm` separately from db-kit (ESM) | Import drizzle helpers THROUGH `@syncra/db-kit`: `import { appDb, schema, eq, and, sql } from '@syncra/db-kit'`. **Never `from 'drizzle-orm'` in app code.** (Rule set on Day 3.) |
 | `new row violates row-level security policy for table "workspaces"`     | The `WITH CHECK` clause requires `app.workspace_id == new.id`; we set it AFTER inserting | Pre-generate the UUID and `set_config('app.workspace_id', newId, true)` BEFORE the INSERT          |
 | Invitation accept returns "not found" even with a valid token           | Token expired, or already accepted                                    | Check `expires_at > now()` and `accepted_at IS NULL` in the candidate scan                          |
 | Mailpit shows zero emails                                               | SMTP host/port wrong, or `nodemailer` can't reach `localhost:1025`    | `docker compose ps mailpit` → confirm port 1025; `SMTP_HOST=localhost SMTP_PORT=1025` in `.env`     |
@@ -904,7 +1367,15 @@ npx nx run frontend:typecheck
 | Two workspaces with the same slug                                       | Race between two concurrent slug-availability checks + create         | Rely on the unique index on `workspaces.slug` — handle `23505` (unique violation) and 409 the client |
 | Inviting same email twice fails                                         | Partial unique index from Day 2: one open invitation per email per ws  | Catch `23505`; return "invitation already pending"                                                  |
 | Accept-invite endpoint mis-keys the user                                | Used `email` to match instead of token hash                            | Always match via `argon2.verify(row.tokenHash, rawToken)`                                            |
-| Casbin policy not loading                                               | Wrong path to `model.conf` / `policy.csv` after build                  | Use `import.meta.dirname` (Node 22+); ensure files are emitted next to `enforcer.js`                |
+| Casbin policy not loading                                               | Wrong path to `model.conf` / `policy.csv` after build                  | Inline model + policy as string constants in `enforcer.ts`; load via `newModel(text)` + `new StringAdapter(text)`. Bundled libs lose disk paths. |
+| Backend boot: `Cannot find module '/Users/.../dist/libs/auth-kit'`      | `target: 'node'` externalises every node_modules dep. At runtime Nx rewrites the require to `<repoRoot>/dist/libs/<name>`, but we emit to `libs/<name>/dist`. | In `apps/backend/webpack.config.js`: bundle `@syncra/*` workspace siblings into `main.js` instead of leaving them external. See the `BundleSyncraLibsPlugin` snippet. |
+| Backend boot: `Reparsing as ES module because module syntax was detected` → `require is not defined in ES module scope` | Node 24 auto-flips `main.js` to ESM when it sees `import`/`export` syntax from bundled ESM libs. Backend's `package.json` has no `"type"` field. | Add `"type": "commonjs"` to `apps/backend/package.json` (NOT the root one — backend only). |
+| Backend boot: `SyntaxError: Cannot use 'import.meta' outside a module`  | Bundled ESM lib code (e.g. `import.meta.dirname` in `enforcer.ts`) gets baked into a CJS bundle | Don't rely on `import.meta` inside libs that get bundled. For Casbin specifically, inline the model + policy strings instead of reading files at runtime. |
+| Browser shows TanStack Router "Not Found" for `/onboarding/workspace`   | Directory is `_onboarding/` (underscore = pathless); children appear at `/workspace`, not `/onboarding/workspace` | Rename the directory + the layout file to `onboarding/` (no underscore). Update `createFileRoute('/onboarding/...')` and any `useSearch({ from: '/onboarding/...' })`. Restart Vite so the plugin regenerates `routeTree.gen.ts`. |
+| `POST /api/workspaces/<slug>/invitations` → `{"statusCode":404,"message":"Workspace not found"}` even though the row exists, AND `/api/workspaces` returns `[]` even after creating workspaces | `WorkspaceService.findBySlug` / `listForUser` / `isSlugAvailable` were using `appDb` (RLS enforced). Without `app.workspace_id` set, RLS hides every row → discovery silently fails | Switch those three methods to use `db` (superuser, BYPASSRLS). They're cross-tenant discovery — we trust the userId filter or slug param, not RLS, for access control. |
+| Slug-availability check incorrectly reports an existing slug as `available: true` | Same `appDb` RLS-hides-rows bug in `isSlugAvailable`. Two users (or the same user twice) end up with near-duplicate slugs because only the DB unique index catches the second one | Use `db` for `isSlugAvailable`; rely on the unique index as the second line of defense |
+| `403 Forbidden` on `/api/workspaces/<slug>/members` even as the workspace **owner** | Casbin matcher used `r.act == p.act` (literal string equality), so the owner policy `p, owner, workspace/*, *` never matched (`'member:list' == '*'` is false). The `*` wildcard is silent — looks right, never fires. | Change the matcher to `keyMatch(r.act, p.act)` in both `libs/auth-kit/src/casbin/model.conf` AND the inline `MODEL` string in `enforcer.ts`. `keyMatch` treats `*` as a wildcard. Rebuild auth-kit and restart backend. |
+| `tsc` errors `Cannot find name 'p'` / `';' expected` after editing the inline `MODEL` string in `enforcer.ts` | A backtick character inside the template literal closes it early. Casbin `#` comments often contain backticks (e.g. `` # `r.act == p.act` ``). | Keep explanatory text **outside** the template literal — put it as a regular `// …` comment above the `const MODEL = …` declaration. Inside the template, only valid Casbin syntax. |
 
 ---
 

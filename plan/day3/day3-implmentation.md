@@ -87,8 +87,8 @@ APP_DATABASE_URL=postgresql://app_user:app_user@localhost:6432/syncra
 npm install @auth/express @auth/core jose cookie-parser -w @syncra/backend
 npm install --save-dev @types/cookie-parser -w @syncra/backend
 
-# Backend uses db-kit for the users table (workspace dep)
-npm install @syncra/db-kit@workspace:* -w @syncra/backend
+# Backend uses db-kit for the users table (workspace dep — npm auto-symlinks siblings by name)
+npm install @syncra/db-kit -w @syncra/backend
 
 # Frontend: TanStack Query (we'll use it for /me)
 npm install @tanstack/react-query -w @syncra/frontend
@@ -127,17 +127,18 @@ export const authConfig: ExpressAuthConfig = {
     maxAge: 60 * 60 * 24 * 7,            // 7 days
   },
 
-  cookies: {
-    sessionToken: {
-      name: '__Host-syncra-session',
-      options: {
-        httpOnly: true,
-        sameSite: 'lax',
-        path: '/',
-        secure: true,                     // browsers exempt localhost from HTTPS
-      },
-    },
-  },
+  // In dev (http://localhost) we let Auth.js choose cookie names + flags.
+  // It will use `authjs.session-token` over plain HTTP and auto-prefix
+  // `__Secure-` / `__Host-` once you serve over HTTPS in production.
+  // The dev-strict `__Host-syncra-session` configuration is below — flip it
+  // on once you serve the SPA over HTTPS (Day 41+):
+  //
+  // cookies: {
+  //   sessionToken: {
+  //     name: '__Host-syncra-session',
+  //     options: { httpOnly: true, sameSite: 'lax', path: '/', secure: true },
+  //   },
+  // },
 
   callbacks: {
     // Put what we need into the JWT payload.
@@ -176,8 +177,10 @@ export const authConfig: ExpressAuthConfig = {
 
 ```ts
 import { Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
-import { db, schema } from '@syncra/db-kit';
+// Always import drizzle helpers (eq, and, sql, …) THROUGH db-kit to avoid the
+// dual-package hazard (lib is ESM, backend is CJS; importing drizzle-orm
+// directly produces two distinct SQL<unknown> types). See db-kit/src/index.ts.
+import { db, schema, eq } from '@syncra/db-kit';
 
 export type IdpProfile = {
   externalId: string;
@@ -285,7 +288,8 @@ import { IdentityMiddleware } from './identity.middleware';
 export class IdentityModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // Run the identity middleware on every API route except auth itself.
-    consumer.apply(IdentityMiddleware).forRoutes('api/(.*)');
+    // Express 5 / path-to-regexp v8 requires named wildcards.
+    consumer.apply(IdentityMiddleware).forRoutes('api/*path');
   }
 }
 ```
@@ -327,7 +331,8 @@ async function bootstrap() {
 
   // Auth.js handles every /api/auth/* route (signin, callback, signout, session).
   // It MUST be mounted before Nest's router so it owns those paths.
-  app.use('/api/auth/*', ExpressAuth(authConfig));
+  // Express 5: mount as a path prefix (no bare `/*` — not valid in path-to-regexp v8).
+  app.use('/api/auth', ExpressAuth(authConfig));
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
@@ -403,26 +408,44 @@ export function useMe() {
 
 `apps/frontend/src/app/login.tsx`:
 
+> **Auth.js v5 requires POST + CSRF** to initiate sign-in. An `<a href>` GET will throw `UnknownAction` on the server. Fetch the CSRF token first, then submit a form.
+
 ```tsx
+import { useEffect, useState } from 'react';
+
 export function LoginPage() {
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/auth/csrf', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((d: { csrfToken: string }) => setCsrfToken(d.csrfToken))
+      .catch(() => setCsrfToken(null));
+  }, []);
+
   return (
     <div style={{ maxWidth: 360, margin: '120px auto', textAlign: 'center' }}>
       <h1>Sign in to Syncra</h1>
       <p style={{ color: '#666' }}>Use your GitHub account</p>
-      <a
-        href="/api/auth/signin/github"
-        style={{
-          display: 'inline-block',
-          marginTop: 16,
-          padding: '10px 20px',
-          background: '#24292f',
-          color: 'white',
-          textDecoration: 'none',
-          borderRadius: 6,
-        }}
-      >
-        Sign in with GitHub
-      </a>
+      <form method="post" action="/api/auth/signin/github" style={{ marginTop: 16 }}>
+        <input type="hidden" name="csrfToken" value={csrfToken ?? ''} />
+        <input type="hidden" name="callbackUrl" value="/" />
+        <button
+          type="submit"
+          disabled={!csrfToken}
+          style={{
+            padding: '10px 20px',
+            background: '#24292f',
+            color: 'white',
+            border: 0,
+            borderRadius: 6,
+            cursor: csrfToken ? 'pointer' : 'not-allowed',
+            opacity: csrfToken ? 1 : 0.6,
+          }}
+        >
+          Sign in with GitHub
+        </button>
+      </form>
     </div>
   );
 }
@@ -517,24 +540,26 @@ Open http://localhost:4200/ in a browser.
 
 ## 10. Verify (paste-able commands)
 
-### 10.1 Cookie shape
+### 10.1 Cookie shape (dev defaults)
 
 Open browser DevTools → **Application → Cookies → http://localhost:4200**. You should see:
 
-| Name                       | HttpOnly | Secure | SameSite | Path |
-| -------------------------- | -------- | ------ | -------- | ---- |
-| `__Host-syncra-session`    | ✓        | ✓      | Lax      | /    |
+| Name                                | HttpOnly | Secure | SameSite | Path |
+| ----------------------------------- | -------- | ------ | -------- | ---- |
+| `authjs.session-token`              | ✓        | (–)    | Lax      | /    |
+| `authjs.csrf-token`                 | ✓        | (–)    | Lax      | /    |
+| `authjs.callback-url`               | ✓        | (–)    | Lax      | /    |
 
-Any flag missing = bug. Fix the `cookies.sessionToken.options` block in `auth.config.ts`.
+In dev (plain HTTP localhost) Auth.js skips the `Secure` flag and the `__Secure-`/`__Host-` prefixes; over HTTPS in prod it auto-adds both. `HttpOnly` and `SameSite=Lax` are always on — those are the non-negotiables.
 
 ### 10.2 The `/api/me` endpoint
 
 ```sh
 # After signing in via the browser:
-COOKIE=$(open browser → DevTools → Application → Cookies, copy __Host-syncra-session value)
+COOKIE=$(open browser → DevTools → Application → Cookies, copy authjs.session-token value)
 
 curl -s "http://localhost:4200/api/me" \
-  -H "Cookie: __Host-syncra-session=$COOKIE"
+  -H "Cookie: authjs.session-token=$COOKIE"
 # {"id":"...","email":"...","displayName":"...","avatarUrl":"...","createdAt":"..."}
 
 # Without cookie:
@@ -554,7 +579,7 @@ psql 'postgresql://syncra:syncra@localhost:6432/syncra' \
 
 ```sh
 curl -i -X POST "http://localhost:4200/api/auth/signout" \
-  -H "Cookie: __Host-syncra-session=$COOKIE"
+  -H "Cookie: authjs.session-token=$COOKIE"
 # Look for a Set-Cookie header that clears the session
 ```
 
@@ -640,7 +665,7 @@ Bad:
 ```sh
 test -f docs/adr/0002-auth-js-v5-vs-clerk.md && echo OK
 grep -E '"@auth/express"' apps/backend/package.json
-grep -E '__Host-syncra-session' apps/backend/src/auth/auth.config.ts
+grep -E "GitHub" apps/backend/src/auth/auth.config.ts
 test -f apps/backend/src/modules/identity/identity.module.ts
 test -f apps/frontend/src/hooks/use-me.ts
 npx nx run backend:typecheck
@@ -654,6 +679,8 @@ npx nx run frontend:typecheck
 
 | Symptom                                                              | Cause                                                               | Fix                                                                                                |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `/api/me` returns `<!doctype html>` (Vite's index.html)               | Vite proxy not active — `proxy` is at the top level instead of nested under `server` | Nest it: `server: { port: 4200, proxy: { '/api': { target: 'http://localhost:3000' } } }`. **Restart Vite** — config changes don't HMR |
+| Auth.js page says "Server error - There is a problem with the server configuration" + backend logs `[auth][error] UnknownAction` | Sign-in button uses `<a href>` (GET) but Auth.js v5 requires `<form method="post">` + CSRF | Fetch `/api/auth/csrf` on mount; POST `signin/github` with hidden `csrfToken` + `callbackUrl` fields |
 | GitHub returns "redirect_uri does not match"                          | Callback URL doesn't match GitHub OAuth app config                   | In GitHub OAuth app settings: `http://localhost:3000/api/auth/callback/github` exactly             |
 | `MissingSecret` / `JWTSessionError`                                   | `AUTH_SECRET` empty or unset                                        | `openssl rand -hex 32` → put in `.env` → restart backend                                            |
 | Auth.js logs "untrusted host"                                         | `trustHost` not set in dev                                          | `trustHost: true` in `auth.config.ts`, plus `AUTH_TRUST_HOST=true` in `.env`                        |
@@ -664,7 +691,11 @@ npx nx run frontend:typecheck
 | Repeated sign-ins create new user rows each time                      | JIT lookup keyed on `email`, not `external_id`                      | `findFirst({ where: eq(users.externalId, ...) })`. `external_id` is the IdP `sub`                   |
 | Sign-out form does nothing                                            | CSRF / form-encoding mismatch                                       | Use `<form method="post" action="/api/auth/signout">` (Auth.js handles a CSRF token internally)     |
 | `localhost:3000` and `localhost:4200` both setting cookies            | Two origins, two cookies, one confused dev                          | Always go through Vite (`http://localhost:4200`); never fetch the backend port directly             |
-| `npm install` fails with `@auth/express not found`                   | The package is published as `@auth/express` (scoped)                 | `npm install @auth/express @auth/core`                                              | -w @syncra/backend
+| `npm install` fails with `@auth/express not found`                   | The package is published as `@auth/express` (scoped)                 | `npm install @auth/express @auth/core -w @syncra/backend`                            |
+| `TypeError: Missing parameter name at 6` on `app.use('/api/auth/*', …)` | Express 5's path-to-regexp v8 rejects bare `*` wildcards            | `app.use('/api/auth', ExpressAuth(authConfig))` — mount as a prefix, no `/*`        |
+| `LegacyRouteConverter` warning on `forRoutes('api/(.*)')`           | Same Express 5 wildcard restriction in Nest middleware              | Use a named wildcard: `forRoutes('api/*path')`                                       |
+| `Type 'SQL<unknown>' is not assignable to type 'SQL<unknown>'`       | Dual-package hazard: backend (CJS) loads drizzle-orm separately from db-kit (ESM) | Import drizzle helpers THROUGH `@syncra/db-kit`: `import { db, schema, eq } from '@syncra/db-kit'`. Never `from 'drizzle-orm'` in app code |
+| `Module '@syncra/db-kit' has no exported member 'db'` (in IDE only) | Lib's `package.json` doesn't expose the `@org/source` condition required by base tsconfig's `customConditions`, or relative imports lack `.js` extensions | (a) Add conditional exports to db-kit/package.json; (b) every relative import inside db-kit ends in `.js` even for `.ts` files (ESM rule) |
 
 ---
 

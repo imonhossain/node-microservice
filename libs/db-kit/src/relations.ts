@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { users, workspaces, workspaceMembers, invitations } from './schema';
+import { users, workspaces, workspaceMembers, invitations } from './schema/index.js';
 
 export const usersRelations = relations(users, ({ many }) => ({
   memberships: many(workspaceMembers),
