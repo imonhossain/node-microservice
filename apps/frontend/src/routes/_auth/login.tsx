@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
+import { createFileRoute } from '@tanstack/react-router';
 
-/**
- * Auth.js v5 requires a POST with a CSRF token to initiate sign-in.
- * Flow:
- *   1. On mount, fetch CSRF token from /api/auth/csrf
- *   2. Render a form that POSTs to /api/auth/signin/github with the token
- *   3. Auth.js redirects to GitHub from the POST handler.
- */
-export function LoginPage() {
+export const Route = createFileRoute('/_auth/login')({
+  component: LoginPage,
+});
+
+function LoginPage() {
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
 
   useEffect(() => {

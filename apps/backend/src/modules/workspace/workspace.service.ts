@@ -6,7 +6,14 @@ import {
 // Always import drizzle helpers THROUGH db-kit. Importing from 'drizzle-orm'
 // directly triggers the dual-package hazard (backend = CJS, db-kit = ESM →
 // two distinct SQL<unknown> types). See plan/day3 + libs/db-kit/src/index.ts.
-import { appDb, schema, and, eq, gt, isNull, sql } from '@syncra/db-kit';
+//
+// `db`     = superuser connection, bypasses RLS. Use for cross-tenant
+//            discovery queries (find-by-slug, list-by-user). The discovery
+//            target is the workspace itself, so we can't set
+//            app.workspace_id before the lookup.
+// `appDb`  = app_user connection, RLS enforced. Use for all per-tenant
+//            reads/writes inside withCtx(); set app.workspace_id first.
+import { appDb, db, schema, and, eq, gt, isNull, sql } from '@syncra/db-kit';
 import { randomUUID } from 'node:crypto';
 import { MailService } from '../mail/mail.service';
 import { generateRawToken, hashToken, verifyToken } from './invitation-token';
@@ -16,7 +23,10 @@ export class WorkspaceService {
   constructor(private readonly mail: MailService) {}
 
   async isSlugAvailable(slug: string): Promise<boolean> {
-    const existing = await appDb.query.workspaces.findFirst({
+    // Discovery query — must see across all tenants (RLS would hide existing
+    // workspaces and falsely report "available", letting two users create
+    // colliding slugs that only the unique index catches).
+    const existing = await db.query.workspaces.findFirst({
       where: eq(schema.workspaces.slug, slug),
     });
     return !existing;
@@ -57,7 +67,10 @@ export class WorkspaceService {
   }
 
   async listForUser(userId: string) {
-    return appDb
+    // Cross-tenant by design: a user belongs to many workspaces. We trust
+    // the userId filter (it comes from the verified session cookie) and
+    // bypass RLS so the JOIN returns every membership.
+    return db
       .select({
         id: schema.workspaces.id,
         slug: schema.workspaces.slug,
@@ -73,7 +86,10 @@ export class WorkspaceService {
   }
 
   async findBySlug(slug: string) {
-    return appDb.query.workspaces.findFirst({
+    // Discovery query — the very thing we'd need to know to set
+    // app.workspace_id IS what we're trying to find. Bypass RLS for the
+    // lookup; membership is asserted separately by WorkspaceMiddleware.
+    return db.query.workspaces.findFirst({
       where: eq(schema.workspaces.slug, slug),
     });
   }

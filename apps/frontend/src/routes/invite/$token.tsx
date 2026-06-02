@@ -1,16 +1,19 @@
 import { useEffect } from 'react';
-import { useNavigate, useParams } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useMe } from '../../hooks/use-me';
 
-export function AcceptInvitePage() {
+export const Route = createFileRoute('/invite/$token')({
+  component: AcceptInvitePage,
+});
+
+function AcceptInvitePage() {
   const navigate = useNavigate();
-  const { token } = useParams({ from: '/invite/$token' });
+  const { token } = Route.useParams();
   const { data: me, isLoading } = useMe();
 
   useEffect(() => {
     if (isLoading) return;
     if (!me) {
-      // Not signed in: redirect to /login?next=/invite/<token>
       window.location.href = `/login?next=${encodeURIComponent(`/invite/${token}`)}`;
       return;
     }
@@ -22,7 +25,7 @@ export function AcceptInvitePage() {
         body: JSON.stringify({ token }),
       });
       if (res.ok) {
-        const { workspaceSlug } = await res.json();
+        const { workspaceSlug } = (await res.json()) as { workspaceSlug: string };
         navigate({ to: '/w/$slug', params: { slug: workspaceSlug } });
       } else {
         navigate({ to: '/' });
@@ -30,9 +33,5 @@ export function AcceptInvitePage() {
     })();
   }, [me, isLoading, token, navigate]);
 
-  return (
-    <div style={{ padding: 80, textAlign: 'center' }}>
-      Accepting invitation…
-    </div>
-  );
+  return <div style={{ padding: 80, textAlign: 'center' }}>Accepting invitation…</div>;
 }

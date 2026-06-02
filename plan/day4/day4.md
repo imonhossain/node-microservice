@@ -97,8 +97,8 @@ libs/auth-kit/
 
 apps/frontend/src/
 ├── routes/
-│   ├── _onboarding/workspace.tsx       ← create workspace
-│   ├── _onboarding/invite.tsx          ← invite teammates
+│   ├── onboarding/workspace.tsx        ← create workspace  (URL: /onboarding/workspace)
+│   ├── onboarding/invite.tsx           ← invite teammates  (URL: /onboarding/invite)
 │   ├── invite/$token.tsx               ← accept invitation
 │   └── _app/w/$slug/members.tsx        ← member list
 └── components/
@@ -242,13 +242,14 @@ g = _, _
 e = some(where (p.eft == allow))
 
 [matchers]
-m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && r.act == p.act
+m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && keyMatch(r.act, p.act)
 ```
 
 Translation:
 - A **request** is `(subject, object, action)`. Subject = role; object = resource pattern; action = verb.
 - A **policy line** has the same shape: "this role can do this action on this resource".
 - The result is `allow` if any policy matches.
+- **Note both `r.obj` and `r.act` use `keyMatch`** — that's what makes `workspace/*` and `*` work as wildcards. If you write `r.act == p.act` (literal equality) instead, the catch-all `p, owner, workspace/*, *` line silently never matches anything because `'member:list' == '*'` is false. The owner ends up with a 403 on every action and the failure mode looks like a permissions bug. (We hit this on the first run.)
 
 `policy.csv`:
 
@@ -400,6 +401,7 @@ We covered this in `ARCHITECTURE.md §16.5.4` if you want the full chain.
 | Use `email` as the global identifier for invitations                          | Carol signs up with a new email (gmail vs work) and can't be matched                              | Bind to email *at invite time*. On accept, JIT-create user even if a row exists under a different email.            |
 | Send the email synchronously inside the request                                | API endpoint timeouts when SMTP is slow                                                          | Enqueue (BullMQ on Day 30) or fire-and-forget in dev. Don't block the response.                                    |
 | `import { eq, and, sql } from 'drizzle-orm'` directly in a backend service     | Dual-package hazard — backend (CJS) sees a different `SQL<unknown>` from db-kit (ESM)            | Always `import { ..., eq, and, sql } from '@syncra/db-kit'`. Rule set on Day 3; applies to every new service from here on. |
+| Route a "find workspace by slug" or "list workspaces for user" query through `appDb` | Discovery queries can't set `app.workspace_id` before the lookup (the lookup IS what discovers it). RLS hides every row → 404 / `[]` | Use the superuser connection `db` for cross-tenant discovery. Use `appDb` (RLS-enforced, inside `withCtx`) for every per-tenant read/write once you know the workspace. |
 
 ---
 
