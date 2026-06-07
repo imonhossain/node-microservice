@@ -1288,13 +1288,13 @@ npx nx serve frontend
 
 Browser flow:
 
-1. Open `http://localhost:4200/login` → sign in with GitHub (user A).
+1. Open `http://localhost:4200/login` → sign in with Google (user A).
 2. Auto-redirect to `/onboarding/workspace`.
 3. Name "Acme Inc.", slug auto-fills "acme-inc" → check ✓ available → **Create**.
 4. Land on `/onboarding/invite` → enter `bob@example.com` → **Send invites**.
 5. Open Mailpit at `http://localhost:8025` → click the invite email → copy the magic link.
 6. Open an incognito window → paste the magic link → it sends you to `/login?next=/invite/<token>`.
-7. Sign in as user B (different GitHub account) → automatically continues to invitation acceptance → lands on `/w/acme-inc`.
+7. Sign in as user B (different Google account) → automatically continues to invitation acceptance → lands on `/w/acme-inc`.
 8. Open `/w/acme-inc/members` — you see two rows.
 
 ---

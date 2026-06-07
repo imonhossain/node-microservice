@@ -1,38 +1,51 @@
 # Day 5 — Implementation
 
-## 0. Pre-flight
+> Stack: tRPC v11 + Zod + superjson + Express adapter on the backend, `@trpc/react-query` on the frontend. Reuses `@syncra/db-kit` + `@syncra/auth-kit` from earlier days.
+
+## 0. Pre-flight (5 minutes)
 
 ```sh
 nvm use 24
-docker compose ps                                         # Day-1 infra Up
-npx nx run backend:typecheck                             # Day 4 backend clean
-npx nx run frontend:typecheck                            # Day 4 frontend clean
-# Manual: sign in, /api/me works, /api/workspaces returns rows
+docker compose ps                                                # Day-1 infra still Up
+npx nx run backend:typecheck                                     # clean
+npx nx run frontend:typecheck                                    # clean
+# In a browser: log in, hit /api/me, /api/workspaces → both return 200
 ```
+
+If any of those are red, fix that first. Today builds on top of working Day-4.
 
 ---
 
 ## 1. Install dependencies
 
 ```sh
-# Backend
+# Backend — tRPC server + superjson (handles Date/Map/Set over JSON)
 npm install @trpc/server zod superjson -w @syncra/backend
 
-# Contracts lib will need Zod + the @trpc/server type entry-point
+# Contracts lib — same packages, because libs/contracts re-exports
+# the AppRouter TYPE and the Zod schemas. We need them at typecheck time.
 npm install @trpc/server zod superjson -w @syncra/contracts
 
-# Frontend
+# Frontend — tRPC client + React-Query adapter. @trpc/server is needed
+# for *types only*; none of its runtime ships in the SPA bundle.
 npm install @trpc/client @trpc/react-query @trpc/server superjson -w @syncra/frontend
-# (@trpc/server is a peer of @trpc/react-query for type imports — required even on the client)
 ```
 
-> `@trpc/server` is imported on the client *only for its types*. None of its runtime ships in the frontend bundle as long as you use type-only imports.
+> Why `@trpc/server` on the frontend? `@trpc/react-query` re-exports type helpers from `@trpc/server`. Without it your editor reports "Cannot find module". TypeScript only — none of its runtime is imported.
+
+Verify:
+
+```sh
+grep -E '@trpc/(server|client|react-query)' apps/backend/package.json apps/frontend/package.json libs/contracts/package.json
+```
 
 ---
 
-## 2. Wire `libs/contracts`
+## 2. Wire `libs/contracts` — the shared edge
 
-`libs/contracts/package.json` — confirm name + a `./server` subpath export:
+This is the most important file structure of the day. Get it right and types flow end-to-end. Get it wrong and you'll fight TypeScript for an hour.
+
+### 2.1 `libs/contracts/package.json` — two exports
 
 ```json
 {
@@ -47,7 +60,9 @@ npm install @trpc/client @trpc/react-query @trpc/server superjson -w @syncra/fro
 }
 ```
 
-> The `./server` subpath is the *type-only* surface the frontend imports. We keep it disjoint from runtime exports so a future runtime export doesn't accidentally bloat the SPA bundle.
+> **Why two subpaths?** The `.` export gives the SPA access to the **Zod schemas** (used for validation + types). The `./server` export gives the SPA access to the **`AppRouter` type**. They're disjoint on purpose — if we later add server-only utilities, they go behind `./server` so the SPA bundle stays small.
+
+### 2.2 The Zod schemas (one file per domain)
 
 `libs/contracts/src/workspace.schema.ts`:
 
@@ -62,9 +77,7 @@ export const CreateWorkspaceInput = z.object({
 });
 export type CreateWorkspaceInput = z.infer<typeof CreateWorkspaceInput>;
 
-export const SlugAvailableInput = z.object({
-  slug: WorkspaceSlug,
-});
+export const SlugAvailableInput = z.object({ slug: WorkspaceSlug });
 
 export const WorkspaceRole = z.enum(['admin', 'member', 'viewer']);
 export type WorkspaceRole = z.infer<typeof WorkspaceRole>;
@@ -82,25 +95,33 @@ export const AcceptInviteInput = z.object({
 export type AcceptInviteInput = z.infer<typeof AcceptInviteInput>;
 ```
 
+> **Pattern**: define the Zod schema, export it, then `export type Foo = z.infer<typeof Foo>` so the same identifier works as both schema and type. Saves a "what was that type called again" lookup.
+
+### 2.3 Barrel files
+
 `libs/contracts/src/index.ts`:
 
 ```ts
 export * from './workspace.schema';
 ```
 
-`libs/contracts/src/server.ts` — this is what the frontend imports for the router type. The actual router type lives in the backend; we re-export its type here.
+`libs/contracts/src/server.ts` — type-only re-export from the backend:
 
 ```ts
-// This file is imported by the frontend FOR TYPES ONLY.
+// IMPORTANT: this file is imported by the frontend FOR TYPES ONLY.
 // The runtime appRouter lives in apps/backend. We re-export its type alias.
 export type { AppRouter } from '../../../apps/backend/src/trpc/router-types';
 ```
 
-> Why a separate `router-types.ts` file in the backend? See §4. It isolates the `type AppRouter` re-export from anything that would pull runtime code into the type-graph (which is fine for types, but easier to reason about kept apart).
+> Why a separate `router-types.ts` in the backend (which we write below) and not re-export from `router.ts` directly? Isolating the type-only file means any future runtime code that might live next to `router.ts` (loggers, side-effect imports) can't accidentally end up bundled into the SPA via a deep type import.
 
 ---
 
 ## 3. Backend — tRPC bootstrap
+
+Three files set up the core: per-request context, shared procedure helpers, and the router barrel.
+
+### 3.1 The context — what every procedure can see
 
 `apps/backend/src/trpc/context.ts`:
 
@@ -118,7 +139,7 @@ export type Services = {
 export type Context = {
   req: Request;
   res: Response;
-  user?: Request['user'];
+  user?: Request['user'];          // hydrated by IdentityMiddleware (Day 3)
   services: Services;
 };
 
@@ -127,12 +148,16 @@ export function createContextFactory(services: Services) {
     return {
       req: opts.req,
       res: opts.res,
-      user: opts.req.user,        // hydrated by IdentityMiddleware (Day 3)
+      user: opts.req.user,
       services,
     };
   };
 }
 ```
+
+> `user` is optional in the *base* context. The `protectedProcedure` helper below upgrades it to non-nullable. That way every procedure sees the right shape.
+
+### 3.2 The procedure helpers — auth chain by composition
 
 `apps/backend/src/trpc/trpc-init.ts`:
 
@@ -159,18 +184,21 @@ const t = initTRPC.context<Context>().create({
 export const router = t.router;
 export const publicProcedure = t.procedure;
 
-/** Requires a signed-in user. Adds `ctx.user` as non-nullable. */
+/** Requires a signed-in user. Adds non-nullable `ctx.user`. */
 export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
   if (!ctx.user) throw new TRPCError({ code: 'UNAUTHORIZED' });
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
 /**
- * Builds a procedure that resolves `:slug` from the input, asserts membership,
- * and runs the Casbin check for the given action.
+ * workspaceProcedure(action):
+ *   - reads input.slug → finds workspace
+ *   - asserts membership
+ *   - runs Casbin enforce(role, slug, action) → 403 if denied
+ *   - adds ctx.workspace and ctx.membership for the handler to use
  *
  * Usage:
- *   workspaceProcedure('workspace:invite').input(z.object({ slug, ...})).mutation(...)
+ *   workspaceProcedure('workspace:invite').input(...).mutation(({ ctx, input }) => ...)
  */
 export function workspaceProcedure(action: string) {
   return protectedProcedure.use(async ({ ctx, input, next }) => {
@@ -194,9 +222,17 @@ export function workspaceProcedure(action: string) {
 }
 ```
 
+Three things to notice:
+
+1. **superjson** is set as the transformer here. We MUST set it on the client too — they have to match.
+2. The `errorFormatter` adds `zodError` to the shape so the frontend can render field-level validation errors.
+3. `workspaceProcedure` chains off `protectedProcedure` — so every workspace-scoped procedure automatically requires sign-in AND membership AND a Casbin check. That's a lot of safety written once.
+
 ---
 
-## 4. Backend — the routers
+## 4. Backend — the routers (one file per domain)
+
+### 4.1 `me`
 
 `apps/backend/src/trpc/routers/me.router.ts`:
 
@@ -210,6 +246,8 @@ export const meRouter = router({
   }),
 });
 ```
+
+### 4.2 `workspace`
 
 `apps/backend/src/trpc/routers/workspace.router.ts`:
 
@@ -266,6 +304,8 @@ export const workspaceRouter = router({
 });
 ```
 
+### 4.3 `invite`
+
 `apps/backend/src/trpc/routers/invite.router.ts`:
 
 ```ts
@@ -280,6 +320,8 @@ export const inviteRouter = router({
     ),
 });
 ```
+
+### 4.4 The root router + type-only re-export
 
 `apps/backend/src/trpc/router.ts`:
 
@@ -308,7 +350,7 @@ export type { AppRouter } from './router';
 
 ## 5. Backend — mount on Express
 
-`apps/backend/src/main.ts` (add the tRPC middleware before listen):
+`apps/backend/src/main.ts` (add the tRPC middleware between `/api/auth` and `app.listen`):
 
 ```ts
 import 'dotenv/config';
@@ -330,9 +372,10 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   app.use(cookieParser());
-  app.use('/api/auth/*', ExpressAuth(authConfig));
+  app.use('/api/auth', ExpressAuth(authConfig));
 
-  // Resolve service singletons from Nest, then build the tRPC context factory.
+  // Pull service singletons out of Nest's DI container, then build the
+  // tRPC context factory. The factory runs per-request inside the adapter.
   const workspaces = app.get(WorkspaceService);
   const identity = app.get(IdentityService);
   const createContext = createContextFactory({ workspaces, identity });
@@ -350,11 +393,13 @@ async function bootstrap() {
 bootstrap();
 ```
 
-> Mount order: `cookieParser` → Auth.js → tRPC → Nest's catch-all. Earlier mounts win.
+> **Mount order matters**: `cookieParser` → Auth.js → tRPC → Nest's catch-all. Earlier mounts win. tRPC needs the cookie parsed before its context factory reads `req.user`.
 
 ---
 
 ## 6. Frontend — tRPC client setup
+
+### 6.1 The client stub
 
 `apps/frontend/src/lib/trpc.ts`:
 
@@ -362,8 +407,12 @@ bootstrap();
 import { createTRPCReact } from '@trpc/react-query';
 import type { AppRouter } from '@syncra/contracts/server';
 
+// `import type` keeps the runtime bundle clean. Only the *shape* of AppRouter
+// crosses the network boundary at compile time.
 export const trpc = createTRPCReact<AppRouter>();
 ```
+
+### 6.2 The provider
 
 `apps/frontend/src/lib/trpc-provider.tsx`:
 
@@ -385,6 +434,7 @@ export function TrpcProvider({ children }: { children: ReactNode }) {
         httpBatchLink({
           url: '/api/trpc',
           fetch(url, options) {
+            // credentials: 'include' makes the session cookie travel with each call
             return fetch(url, { ...options, credentials: 'include' });
           },
           transformer: superjson,
@@ -401,29 +451,58 @@ export function TrpcProvider({ children }: { children: ReactNode }) {
 }
 ```
 
-Wrap the app root — `apps/frontend/src/main.tsx`:
+### 6.3 Wire it into the app
+
+`apps/frontend/src/app/app.tsx`:
 
 ```tsx
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { App } from './app/app';
-import { TrpcProvider } from './lib/trpc-provider';
-import './styles.css';
+import { RouterProvider, createRouter } from '@tanstack/react-router';
+import { useState } from 'react';
+import { routeTree } from '../routeTree.gen';
+import { TrpcProvider } from '../lib/trpc-provider';
+import { QueryClient } from '@tanstack/react-query';
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: ReturnType<typeof buildRouter>;
+  }
+}
+
+function buildRouter(queryClient: QueryClient) {
+  return createRouter({
+    routeTree,
+    context: { queryClient },
+    defaultPreload: 'intent',
+  });
+}
+
+export function App() {
+  return (
     <TrpcProvider>
-      <App />
+      {/* If you wired a router previously, replace the previous QueryClient
+          setup so TrpcProvider owns the singleton QueryClient. */}
+      <InnerApp />
     </TrpcProvider>
-  </StrictMode>,
-);
+  );
+}
+
+function InnerApp() {
+  // Pull the QueryClient out of the tRPC provider so it can flow into the router.
+  // Most projects just create a single QueryClient at app startup and pass it
+  // to both. We keep this two-step shape so it's clear what depends on what.
+  // (You can simplify if you prefer.)
+  const [router] = useState(() => buildRouter(new QueryClient()));
+  return <RouterProvider router={router} />;
+}
 ```
 
-> If you already have a `QueryClientProvider` from Day 3, **remove it** — `TrpcProvider` owns the QueryClient now. Two providers = two caches and weird invalidation.
+> **Important**: if your Day-3 `app.tsx` already had a `<QueryClientProvider>`, **delete it**. Two providers in the tree = two caches = invalidation works in one and not the other. The new `TrpcProvider` owns the one true `QueryClient`.
 
 ---
 
-## 7. Frontend — replace `fetch` with tRPC hooks
+## 7. Frontend — migrate Day-4 fetches to tRPC hooks
+
+We replace every `fetch('/api/...')` call from Day 4 with a tRPC hook.
 
 ### 7.1 `useMe`
 
@@ -433,12 +512,11 @@ createRoot(document.getElementById('root')!).render(
 import { trpc } from '../lib/trpc';
 
 export function useMe() {
-  // returns { data, isLoading, error } — fully typed
   return trpc.me.get.useQuery(undefined, { retry: false });
 }
 ```
 
-### 7.2 Workspace list, create, invite, members
+### 7.2 Workspaces
 
 `apps/frontend/src/hooks/use-workspaces.ts`:
 
@@ -452,7 +530,7 @@ export function useWorkspaces() {
 export function useCreateWorkspace() {
   const utils = trpc.useUtils();
   return trpc.workspace.create.useMutation({
-    onSuccess: () => { utils.workspace.list.invalidate(); },
+    onSuccess: () => utils.workspace.list.invalidate(),
   });
 }
 
@@ -474,21 +552,21 @@ export function useMembers(slug: string) {
 export function useAcceptInvitation() {
   const utils = trpc.useUtils();
   return trpc.invite.accept.useMutation({
-    onSuccess: () => { utils.workspace.list.invalidate(); },
+    onSuccess: () => utils.workspace.list.invalidate(),
   });
 }
 ```
 
-### 7.3 Refactor yesterday's pages
+### 7.3 Refactor the onboarding pages
 
-In `routes/_onboarding/workspace.tsx` — replace fetch + state with hooks:
+Open `routes/onboarding/workspace.tsx`. Replace `fetch('/api/workspaces/...')` with the hooks above. Sketch:
 
 ```tsx
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useSlugAvailable, useCreateWorkspace } from '../../hooks/use-workspaces';
 
-export function OnboardingWorkspacePage() {
+function OnboardingWorkspacePage() {
   const navigate = useNavigate();
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -513,59 +591,87 @@ export function OnboardingWorkspacePage() {
 }
 ```
 
-Apply the same pattern to `_onboarding/invite.tsx`, `invite/$token.tsx`, `_app/w/$slug/members.tsx`, and the workspace switcher.
+Apply the same pattern to:
+- `routes/onboarding/invite.tsx` — replace `fetch('/api/workspaces/.../invitations')` with `useInviteToWorkspace`.
+- `routes/invite/$token.tsx` — `useAcceptInvitation`.
+- `routes/_app/w/$slug/members.tsx` — `useMembers(slug)`.
+- `routes/_app/index.tsx` — `useWorkspaces()`.
+- `components/workspace-switcher.tsx` — already uses `useWorkspaces`; no change once that hook is the tRPC version.
 
-> Delete the old REST fetch helpers from Day 4 once their callers are migrated.
+Then **delete the raw fetch helpers** that the previous hooks used. They're dead code now.
 
 ---
 
-## 8. Run and verify
+## 8. Run + manual sanity check
 
 ```sh
-npx nx serve backend
-npx nx serve frontend
-# Sign in, navigate the full Day-4 flow. Everything should still work, with no `fetch` calls in the components.
+# Terminal A
+npm run backend
+# Wait for "API running on http://localhost:3000"
+
+# Terminal B
+npm run frontend
+# Wait for "Local: http://localhost:4200/"
 ```
 
-Type-safety smoke test:
+In a browser, sign in. Walk the Day-4 flow: create workspace → invite teammates → land on workspace home → view members. **Everything should still work**, just now powered by tRPC calls instead of `fetch`. Pop open DevTools → Network. You'll see `/api/trpc/workspace.list?batch=1`, `/api/trpc/workspace.create?batch=1`, etc.
+
+---
+
+## 9. The type-safety smoke test (the whole point of today)
+
+This is the proof that the contracts are tight:
 
 ```sh
-# Open libs/contracts/src/workspace.schema.ts
-# Change: `name: z.string().min(1).max(100)`
-#    to:  `displayName: z.string().min(1).max(100)`
+# Step 1: edit libs/contracts/src/workspace.schema.ts
+# Change `name: z.string().min(1).max(100)` → `displayName: z.string().min(1).max(100)`
+# Save.
+
 npx nx run frontend:typecheck
-# → red errors in onboarding-workspace.tsx referencing `.name` field
-# Revert the change.
+# → Expect: red errors on every line in the SPA that reads `.name`,
+#   e.g. routes/_app/index.tsx, routes/_app/w/$slug/index.tsx, components/workspace-switcher.tsx
+
+# Step 2: REVERT the schema change.
+npx nx run frontend:typecheck
+# → exit 0
 ```
 
-Manual API sanity:
+Try the same with a Zod validation tweak (e.g., shorten `name`'s max to `10`). Frontend submissions of long names get rejected with a Zod error pre-render. Beautiful.
+
+---
+
+## 10. Verify (paste-able)
+
+Get your session cookie value from the browser DevTools → Application → Cookies, then:
 
 ```sh
-# Use a session cookie from the browser
-COOKIE='__Host-syncra-session=<value>'
+COOKIE='authjs.session-token=PASTE_VALUE_HERE'
 
 # query: me.get
 curl -s "http://localhost:4200/api/trpc/me.get?batch=1&input=%7B%220%22%3A%7B%7D%7D" \
-  -H "Cookie: $COOKIE" | head -c 300
+  -H "Cookie: $COOKIE" | head -c 400; echo
 
-# mutation: workspace.create (bad input → 400)
+# mutation: workspace.create with bad input (expect 400 with Zod error)
 curl -i -s -X POST 'http://localhost:4200/api/trpc/workspace.create?batch=1' \
   -H "Cookie: $COOKIE" \
   -H 'content-type: application/json' \
-  -d '{"0":{"json":{"slug":"BAD","name":""}}}' | head -10
-# → 400, Zod error in body
+  -d '{"0":{"json":{"slug":"BAD SLUG","name":""}}}' | head -10
 ```
+
+You should see:
+- `me.get` → 200 with your user JSON.
+- `workspace.create` with bad input → 400, body contains the Zod validation error.
 
 ---
 
-## 9. ADR 0003
+## 11. ADR 0003
 
 `docs/adr/0003-trpc-over-rest-for-web-edge.md`:
 
 ```markdown
 ---
 status: accepted
-date: 2026-05-13
+date: <today>
 deciders: imon
 ---
 
@@ -576,18 +682,18 @@ deciders: imon
 The web SPA and the backend are one codebase. We want:
 
 - Zero-drift types between server and client.
-- Runtime input validation (defense against `curl`/malicious clients).
+- Runtime input validation (defense against `curl` and malicious clients).
 - Familiar TanStack Query semantics on the client.
-- Zero codegen step in dev.
+- Zero codegen step in the dev loop.
 
 Third-party customers will also call us (Day 32+). They expect REST.
 
 ## Considered Options
 
 - **tRPC** — TypeScript-only RPC; type-safe end-to-end; no codegen.
-- **GraphQL** — Powerful, but heavy: schema, resolvers, codegen step, N+1 traps.
-- **OpenAPI + codegen** — Standards-compliant, language-agnostic; introduces a codegen step and drift risk if not enforced.
-- **Hand-written REST + shared Zod schemas** — Works; constant temptation to skip validation; types-at-the-edge still ad hoc.
+- **GraphQL** — Powerful, but heavier: schema, resolvers, codegen, N+1 traps.
+- **OpenAPI + codegen** — Standards-compliant, language-agnostic; adds a codegen step and a drift risk if the team forgets to re-run it.
+- **Hand-written REST + shared Zod schemas** — Works; constant temptation to skip validation; types-at-the-edge stay ad hoc.
 
 ## Decision Outcome
 
@@ -604,9 +710,9 @@ Good:
 - Procedures compose: `workspaceProcedure(action).input(...).mutation(...)`.
 
 Bad:
-- TypeScript-only. A future non-TS internal client (Python, etc.) would need a thin REST/OpenAPI shim.
+- TypeScript-only. A future non-TS internal client (Python, etc.) needs a thin REST/OpenAPI shim.
 - tRPC routes (`/api/trpc/...`) are opaque to humans inspecting traffic — `curl` is more verbose.
-- Two stacks (tRPC + REST) means two error-handling, two rate-limiting, two observability paths. We accept this; the public API surface is small.
+- Two stacks (tRPC + REST) mean two error-handling, two rate-limiting, two observability paths. We accept this; the public API surface is small and well-isolated.
 
 ## More Information
 
@@ -616,49 +722,54 @@ Bad:
 
 ---
 
-## 10. Done-criteria checklist
+## 12. Done-criteria checklist
 
 ```sh
 test -f apps/backend/src/trpc/router.ts
 test -f apps/backend/src/trpc/router-types.ts
 test -f libs/contracts/src/workspace.schema.ts
+test -f libs/contracts/src/server.ts
 test -f apps/frontend/src/lib/trpc.ts
+test -f apps/frontend/src/lib/trpc-provider.tsx
+
 grep -q "createTRPCReact" apps/frontend/src/lib/trpc.ts
-grep -q "@trpc/server/adapters/express" apps/backend/src/main.ts
+grep -q "trpcExpress" apps/backend/src/main.ts
 
 npx nx run backend:typecheck
 npx nx run frontend:typecheck
 
-# No stray fetch('/api/workspaces...') calls left in components
-! grep -r "fetch('/api/workspaces" apps/frontend/src 2>/dev/null && echo "✓ no REST calls left"
+# No stray fetch('/api/workspaces...') calls left in components.
+# (The bare onboarding fetches were the migration target; route files now use hooks.)
+! grep -r "fetch('/api/workspaces" apps/frontend/src 2>/dev/null && echo "✓ no REST workspace calls left"
 
 test -f docs/adr/0003-trpc-over-rest-for-web-edge.md
 ```
 
 ---
 
-## 11. Common errors and fixes
+## 13. Common errors and fixes
 
 | Symptom                                                                | Cause                                                                                       | Fix                                                                                                                |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Frontend bundle balloons after wiring tRPC                              | Imported `AppRouter` via `import { type AppRouter }` (drops the `type` modifier)            | `import type { AppRouter } from '@syncra/contracts/server'`. Confirm with `rollup-plugin-visualizer` that no backend code is bundled |
-| `TypeError: superjson is not a function`                                | Forgot transformer on either server or client                                               | Both `initTRPC.create({ transformer: superjson })` AND `httpBatchLink({ transformer: superjson })`                  |
-| Date fields come back as strings                                        | superjson not configured on both sides                                                      | Same as above                                                                                                      |
-| `UNAUTHORIZED` from every procedure even when signed in                 | Order in `main.ts` is wrong — tRPC mounted before IdentityMiddleware runs                   | IdentityMiddleware runs per Nest's pipeline. Make sure `req.user` is populated on the request that hits `/api/trpc` |
-| Zod errors hidden as generic `INTERNAL_SERVER_ERROR`                    | Default error formatter doesn't include `zodError`                                          | Use the `errorFormatter` in `trpc-init.ts` shown above                                                              |
-| `workspace.invite` runs without role check                              | `workspaceProcedure` was bypassed; you used `protectedProcedure` directly                   | Anywhere you act on a workspace, use `workspaceProcedure('verb')`, not `protectedProcedure`                          |
-| `Property 'workspace' does not exist on type 'Context'`                 | Procedure isn't downstream of `workspaceProcedure`; or middleware chain returned wrong ctx  | Make sure `next({ ctx: { ...ctx, workspace, membership } })` runs                                                  |
-| Two QueryClients in DevTools                                            | Day-3 `<QueryClientProvider>` not removed when adding `TrpcProvider`                        | Delete the old provider; `TrpcProvider` owns the QueryClient                                                       |
-| `Cannot find module '@syncra/contracts/server'`                          | Subpath export missing from `libs/contracts/package.json`                                   | Confirm `"exports": { "./server": "./src/server.ts" }`                                                              |
-| Frontend hangs on first tRPC call                                       | Vite proxy not forwarding `/api/trpc` (paths starting with `/api` should already be covered) | Confirm `vite.config.ts` proxies `/api`; tRPC lives under `/api/trpc`                                                |
-| Big batch GET URL gets rejected (`URI Too Long`)                        | `httpBatchLink` batches many queries into one GET                                           | For huge batches, switch to `httpLink` (per-call) or split callers; rare in practice                                |
+| Frontend bundle balloons after wiring tRPC                              | `import { type AppRouter } …` dropped the `type` modifier (or you imported from the backend directly) | `import type { AppRouter } from '@syncra/contracts/server'`. Confirm with `rollup-plugin-visualizer` that no backend code is in the bundle. |
+| Dates come back as strings                                              | superjson configured on only one side                                                       | Both `initTRPC.create({ transformer: superjson })` AND `httpBatchLink({ transformer: superjson })`. They MUST match. |
+| `UNAUTHORIZED` from every procedure even when signed in                 | tRPC mounted before `IdentityMiddleware` runs                                                | IdentityMiddleware runs per Nest's pipeline. Confirm `req.user` is populated on the request that hits `/api/trpc`. |
+| Zod errors hidden as generic `INTERNAL_SERVER_ERROR`                    | Default error formatter doesn't include `zodError`                                          | Use the `errorFormatter` in `trpc-init.ts` shown above; check `error.data.zodError` on the client.                  |
+| `workspace.invite` runs without role check                              | Procedure derives from `protectedProcedure` instead of `workspaceProcedure`                  | Anywhere you act on a workspace, use `workspaceProcedure('verb')`. Don't bypass.                                    |
+| `Property 'workspace' does not exist on type 'Context'`                 | Procedure isn't chained off `workspaceProcedure`                                              | Make sure the chain returns `next({ ctx: { ...ctx, workspace, membership } })`.                                    |
+| Two QueryClients in DevTools React-Query panel                          | Day-3 `<QueryClientProvider>` wasn't removed when `<TrpcProvider>` was added                 | Delete the old provider; `TrpcProvider` owns the QueryClient now.                                                  |
+| `Cannot find module '@syncra/contracts/server'`                          | Subpath export missing from `libs/contracts/package.json`                                    | Confirm `"exports": { ".": "./src/index.ts", "./server": "./src/server.ts" }`.                                     |
+| Frontend hangs on first tRPC call                                       | Vite proxy not forwarding `/api/trpc` (paths starting with `/api` should already be covered) | Confirm `vite.config.mts` has `server.proxy['/api']`; tRPC lives under `/api/trpc`.                                  |
+| Big batch GET URL gets rejected (`URI Too Long`)                        | `httpBatchLink` collapses many queries into one GET                                          | For pathologically huge batches, switch to `httpLink` (per-call). Rarely happens in practice.                       |
 
 ---
 
-## 12. Tear down (debugging)
+## 14. Tear down (for debugging only)
 
 ```sh
-# Revert to per-call fetches by re-importing the old hooks. Generally not needed.
-# To temporarily disable batching for easier debugging in DevTools:
-#   replace httpBatchLink with httpLink in trpc-provider.tsx
+# Temporarily disable batching to see individual calls in DevTools:
+#   replace httpBatchLink with httpLink in apps/frontend/src/lib/trpc-provider.tsx
+
+# Roll back to REST calls (not recommended; we want the type safety):
+#   the old fetch hooks are in your git history.
 ```

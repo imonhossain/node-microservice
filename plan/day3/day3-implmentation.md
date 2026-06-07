@@ -1,6 +1,6 @@
 # Day 3 — Implementation
 
-> Stack: Auth.js v5 + GitHub OAuth + NestJS (apps/backend) + React + Vite (apps/frontend) + `@syncra/db-kit` from Day 2.
+> Stack: Auth.js v5 + Google OAuth + NestJS (apps/backend) + React + Vite (apps/frontend) + `@syncra/db-kit` from Day 2.
 
 ## 0. Pre-flight
 
@@ -15,21 +15,29 @@ npm test -w @syncra/db-kit                 # 3 passing
 
 ---
 
-## 1. Create a GitHub OAuth app
+## 1. Create a Google OAuth client
 
-1. Go to https://github.com/settings/developers → **New OAuth App**.
-2. Fill in:
-   - **Application name**: `Syncra (dev)`
-   - **Homepage URL**: `http://localhost:4200`
-   - **Authorization callback URL**: `http://localhost:3000/api/auth/callback/github`
-3. Save.
-4. Click **Generate a new client secret**. Copy both values somewhere safe.
+1. Go to https://console.cloud.google.com/apis/credentials.
+2. Create or pick a project (top-left selector). For a learning project a single project is fine.
+3. **OAuth consent screen** → **External** → fill the minimum:
+   - **App name**: `Syncra (dev)`
+   - **User support email**: your Gmail
+   - **Developer contact email**: your Gmail
+   - Save. Leave the app in **Testing** mode (no Google verification needed while you're the only user).
+   - **Test users**: add your own Gmail under "Test users". Without this, Google blocks sign-in with `access_denied`.
+4. **Credentials** → **Create Credentials** → **OAuth client ID**:
+   - **Application type**: `Web application`
+   - **Name**: `Syncra (local)`
+   - **Authorized JavaScript origins**: `http://localhost:4200`
+   - **Authorized redirect URIs**: `http://localhost:3000/api/auth/callback/google` (exact match — port **3000**, all lowercase, no trailing slash).
+   - Create.
+5. Copy the **Client ID** and **Client secret** — you'll paste them into `.env` next.
 
 You now have:
 
 ```
-GitHub Client ID:     Iv1.abc123...
-GitHub Client Secret: ghp_xyz789...
+Google Client ID:     <ID>.apps.googleusercontent.com
+Google Client Secret: GOCSPX-<random-string>
 ```
 
 ---
@@ -57,9 +65,9 @@ AUTH_SECRET=<paste the 32-byte hex from step 2>
 AUTH_TRUST_HOST=true
 AUTH_URL=http://localhost:3000
 
-# GitHub OAuth
-AUTH_GITHUB_ID=<your client id>
-AUTH_GITHUB_SECRET=<your client secret>
+# Google OAuth
+AUTH_GOOGLE_ID=<your client id>
+AUTH_GOOGLE_SECRET=<your client secret>
 
 # Database (already there from Day 2, but make sure)
 DATABASE_URL=postgresql://syncra:syncra@localhost:6432/syncra
@@ -72,8 +80,8 @@ Update `.env.example` (committed, no secrets):
 AUTH_SECRET=replace-with-openssl-rand-hex-32
 AUTH_TRUST_HOST=true
 AUTH_URL=http://localhost:3000
-AUTH_GITHUB_ID=
-AUTH_GITHUB_SECRET=
+AUTH_GOOGLE_ID=
+AUTH_GOOGLE_SECRET=
 DATABASE_URL=postgresql://syncra:syncra@localhost:6432/syncra
 APP_DATABASE_URL=postgresql://app_user:app_user@localhost:6432/syncra
 ```
@@ -108,7 +116,7 @@ grep -E '"@tanstack/react-query"' apps/frontend/package.json
 `apps/backend/src/auth/auth.config.ts`:
 
 ```ts
-import GitHub from '@auth/express/providers/github';
+import Google from '@auth/express/providers/google';
 import type { ExpressAuthConfig } from '@auth/express';
 
 export const authConfig: ExpressAuthConfig = {
@@ -116,9 +124,9 @@ export const authConfig: ExpressAuthConfig = {
   secret: process.env.AUTH_SECRET,
 
   providers: [
-    GitHub({
-      clientId: process.env.AUTH_GITHUB_ID!,
-      clientSecret: process.env.AUTH_GITHUB_SECRET!,
+    Google({
+      clientId: process.env.AUTH_GOOGLE_ID!,
+      clientSecret: process.env.AUTH_GOOGLE_SECRET!,
     }),
   ],
 
@@ -148,7 +156,7 @@ export const authConfig: ExpressAuthConfig = {
         token.sub = String(profile.id ?? token.sub);
         token.email = profile.email ?? token.email;
         token.name = profile.name ?? token.name;
-        token.picture = (profile as { avatar_url?: string }).avatar_url ?? token.picture;
+        token.picture = (profile as { picture?: string }).picture ?? token.picture;
         token.provider = account.provider;
       }
       return token;
@@ -426,8 +434,8 @@ export function LoginPage() {
   return (
     <div style={{ maxWidth: 360, margin: '120px auto', textAlign: 'center' }}>
       <h1>Sign in to Syncra</h1>
-      <p style={{ color: '#666' }}>Use your GitHub account</p>
-      <form method="post" action="/api/auth/signin/github" style={{ marginTop: 16 }}>
+      <p style={{ color: '#666' }}>Use your Google account</p>
+      <form method="post" action="/api/auth/signin/google" style={{ marginTop: 16 }}>
         <input type="hidden" name="csrfToken" value={csrfToken ?? ''} />
         <input type="hidden" name="callbackUrl" value="/" />
         <button
@@ -443,7 +451,7 @@ export function LoginPage() {
             opacity: csrfToken ? 1 : 0.6,
           }}
         >
-          Sign in with GitHub
+          Sign in with Google
         </button>
       </form>
     </div>
@@ -532,8 +540,8 @@ npx nx serve frontend
 
 Open http://localhost:4200/ in a browser.
 
-- You see the **Sign in with GitHub** button.
-- Click it → redirected to GitHub → click **Authorize** → bounced back to `/`.
+- You see the **Sign in with Google** button.
+- Click it → redirected to Google → click **Continue** / **Allow** → bounced back to `/`.
 - The page now shows your name, email, and avatar.
 
 ---
@@ -572,7 +580,7 @@ curl -i "http://localhost:4200/api/me"
 ```sh
 psql 'postgresql://syncra:syncra@localhost:6432/syncra' \
   -c "SELECT id, email, external_id, display_name FROM users;"
-# 1 row, your GitHub id + email
+# 1 row, your Google sub + email
 ```
 
 ### 10.4 Sign-out clears the cookie
@@ -587,7 +595,7 @@ After signing out in the browser, refreshing `/api/me` returns 401.
 
 ### 10.5 Idempotent JIT
 
-Sign out + sign back in with the same GitHub account. Confirm:
+Sign out + sign back in with the same Google account. Confirm:
 
 ```sh
 psql 'postgresql://syncra:syncra@localhost:6432/syncra' -c "SELECT count(*) FROM users;"
@@ -596,7 +604,7 @@ psql 'postgresql://syncra:syncra@localhost:6432/syncra' -c "SELECT count(*) FROM
 
 ### 10.6 Different account creates a new row
 
-If you have a second GitHub account, sign out and sign in with it. Run the count again — should be 2.
+If you have a second Google account, sign out and sign in with it. Run the count again — should be 2.
 
 ---
 
@@ -617,7 +625,7 @@ deciders: imon
 
 We need an authentication system that:
 
-- Supports OAuth 2.0 with multiple providers (GitHub today; Google, SAML later).
+- Supports OAuth 2.0 with multiple providers (Google today; SAML later).
 - Issues secure cookie sessions with `__Host-` + `HttpOnly` + `SameSite=Lax`.
 - Plays well with NestJS (Express under the hood).
 - Lets us own the `users` table and JIT-provision rows on first sign-in.
@@ -628,7 +636,7 @@ We need an authentication system that:
 - **Auth.js v5 (`@auth/express`)** — open-source, framework-agnostic since v5.
 - **Clerk** — hosted SaaS; one-line integration; JWKS-verified JWTs.
 - **Roll-your-own with `arctic` + `jose`** — minimal libraries, deepest learning, most code.
-- **`passport` + `passport-github`** — venerable, decoupled, but old-school.
+- **`passport` + `passport-google-oauth20`** — venerable, decoupled, but old-school.
 
 ## Decision Outcome
 
@@ -638,7 +646,7 @@ Chosen: **Auth.js v5**.
 - The Express adapter mounts cleanly in a Nest app.
 - Built-in cookie discipline (we configure `__Host-`, `HttpOnly`, `SameSite=Lax`).
 - We own the JIT-provisioning seam via the `jwt` callback.
-- No vendor lock-in. We can swap providers (GitHub → Google → SAML) without changing how sessions work.
+- No vendor lock-in. We can swap providers (Google → another OIDC IdP → SAML) without changing how sessions work.
 
 Rejected:
 
@@ -665,7 +673,7 @@ Bad:
 ```sh
 test -f docs/adr/0002-auth-js-v5-vs-clerk.md && echo OK
 grep -E '"@auth/express"' apps/backend/package.json
-grep -E "GitHub" apps/backend/src/auth/auth.config.ts
+grep -E "Google" apps/backend/src/auth/auth.config.ts
 test -f apps/backend/src/modules/identity/identity.module.ts
 test -f apps/frontend/src/hooks/use-me.ts
 npx nx run backend:typecheck
@@ -680,8 +688,9 @@ npx nx run frontend:typecheck
 | Symptom                                                              | Cause                                                               | Fix                                                                                                |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `/api/me` returns `<!doctype html>` (Vite's index.html)               | Vite proxy not active — `proxy` is at the top level instead of nested under `server` | Nest it: `server: { port: 4200, proxy: { '/api': { target: 'http://localhost:3000' } } }`. **Restart Vite** — config changes don't HMR |
-| Auth.js page says "Server error - There is a problem with the server configuration" + backend logs `[auth][error] UnknownAction` | Sign-in button uses `<a href>` (GET) but Auth.js v5 requires `<form method="post">` + CSRF | Fetch `/api/auth/csrf` on mount; POST `signin/github` with hidden `csrfToken` + `callbackUrl` fields |
-| GitHub returns "redirect_uri does not match"                          | Callback URL doesn't match GitHub OAuth app config                   | In GitHub OAuth app settings: `http://localhost:3000/api/auth/callback/github` exactly             |
+| Auth.js page says "Server error - There is a problem with the server configuration" + backend logs `[auth][error] UnknownAction` | Sign-in button uses `<a href>` (GET) but Auth.js v5 requires `<form method="post">` + CSRF | Fetch `/api/auth/csrf` on mount; POST `signin/google` with hidden `csrfToken` + `callbackUrl` fields |
+| Google returns `redirect_uri_mismatch`                                | Callback URL in Google Cloud Console doesn't match exactly             | In the Google OAuth client → Authorized redirect URIs: `http://localhost:3000/api/auth/callback/google` (port 3000, no trailing slash, all lowercase) |
+| Google sign-in shows `access_denied` page                              | App is in **Testing** mode and your Gmail isn't on the Test users list | Google Cloud Console → OAuth consent screen → Test users → add your Gmail                          |
 | `MissingSecret` / `JWTSessionError`                                   | `AUTH_SECRET` empty or unset                                        | `openssl rand -hex 32` → put in `.env` → restart backend                                            |
 | Auth.js logs "untrusted host"                                         | `trustHost` not set in dev                                          | `trustHost: true` in `auth.config.ts`, plus `AUTH_TRUST_HOST=true` in `.env`                        |
 | Cookie set but `/api/me` returns 401 from the SPA                     | Frontend on different origin → cookie not sent                      | Use the Vite proxy: `/api → http://localhost:3000`. Don't `fetch('http://localhost:3000/api/me')` directly |

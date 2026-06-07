@@ -9,7 +9,7 @@ Two days ago you booted infrastructure. Yesterday you made the database refuse t
 
 Until now, every query has been *scoped to a workspace*, but **nobody is signed in**. There's no Alice, no Bob — just rows. Today's job:
 
-> Alice opens her browser, clicks "Sign in with GitHub", and ends up signed in to Syncra. Our backend knows she is Alice. We can prove it on every request.
+> Alice opens her browser, clicks "Sign in with Google", and ends up signed in to Syncra. Our backend knows she is Alice. We can prove it on every request.
 
 By the end of today, you'll be able to say:
 
@@ -59,16 +59,16 @@ The whole rest of the day is the mechanics of those three steps.
    │ Browser  (apps/frontend)      │
    │   /login page  •  useMe()     │
    └──────────────┬───────────────┘
-                  │ 1. clicks "Sign in with GitHub"
+                  │ 1. clicks "Sign in with Google"
                   ▼
    ┌──────────────────────────────┐
    │ Backend  (apps/backend)       │
-   │   /api/auth/* (Auth.js)       │   ← redirects to GitHub
+   │   /api/auth/* (Auth.js)       │   ← redirects to Google
    └──────────────┬───────────────┘
                   │
                   ▼
             ┌──────────┐
-            │  GitHub  │  ← user signs in there
+            │  Google  │  ← user signs in there
             └─────┬────┘
                   │ 2. redirects back with ?code=...
                   ▼
@@ -111,7 +111,7 @@ apps/backend/src/
 
 apps/frontend/src/
 ├── routes/
-│   ├── _auth/login.tsx             ← "Sign in with GitHub" button
+│   ├── _auth/login.tsx             ← "Sign in with Google" button
 │   └── _app/index.tsx              ← post-login shell
 └── hooks/
     └── use-me.ts                    ← TanStack Query hook
@@ -123,7 +123,7 @@ apps/frontend/src/
 
 | Idea                       | One-line summary                                                                       |
 | -------------------------- | -------------------------------------------------------------------------------------- |
-| **OAuth 2.0 / OIDC**       | A handshake that lets a third party (GitHub) tell us *who you are* without giving us your password. |
+| **OAuth 2.0 / OIDC**       | A handshake that lets a third party (Google) tell us *who you are* without giving us your password. |
 | **JWT cookie session**     | A tiny signed string we put in a cookie; reading it tells us who's signed in, no DB hit. |
 | **JWKS** (related)         | A list of public keys an IdP publishes so anyone can verify *its* signed tokens.       |
 | **Cookie flag discipline** | The four flags (`__Host-`, `Secure`, `HttpOnly`, `SameSite`) that turn a cookie from "footgun" to "safe". |
@@ -133,29 +133,29 @@ Let's meet them properly.
 
 ---
 
-### 3.1 OAuth 2.0 — the "let GitHub tell you who I am" handshake
+### 3.1 OAuth 2.0 — the "let Google tell you who I am" handshake
 
 Imagine you walk into a bar. The bouncer wants to verify your age. You don't hand him your house keys, your birth certificate, and your social security number — you hand him a **driver's license**. The DMV (a third party) attests to your age; the bouncer trusts the DMV.
 
-OAuth is exactly that, for software. GitHub is the DMV. Our backend is the bouncer. The user's password never touches us.
+OAuth is exactly that, for software. Google is the DMV. Our backend is the bouncer. The user's password never touches us.
 
 Here's the dance, in 6 steps:
 
 ```
-1. User clicks "Sign in with GitHub" on our /login page
-2. We redirect them to: github.com/login/oauth/authorize?client_id=...&scope=read:user
-3. GitHub asks them: "Hi Alice, do you want to let Syncra read your profile?"
+1. User clicks "Sign in with Google" on our /login page
+2. We redirect them to: accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=read:user
+3. Google asks them: "Hi Alice, do you want to let Syncra read your profile?"
 4. Alice clicks "Authorize"
-5. GitHub redirects back to: localhost:3000/api/auth/callback/github?code=abc123
+5. Google redirects back to: localhost:3000/api/auth/callback/google?code=abc123
 6. Our backend exchanges that code (server-to-server) for an access token + user profile
-   └─ now we know "this person is alice@github with id 12345"
+   └─ now we know "this person is alice@gmail with id 12345"
 ```
 
-Step 6 is invisible to the user. The browser just sees: redirect to GitHub → redirect back → logged in.
+Step 6 is invisible to the user. The browser just sees: redirect to Google → redirect back → logged in.
 
-> **OIDC** (OpenID Connect) is OAuth 2.0 + a thin layer that returns an **ID token** (a JWT containing user info) at step 5. GitHub doesn't speak OIDC; Google, Auth0, Clerk do. We won't go deep on OIDC today, but the same flow applies.
+> **OIDC** (OpenID Connect) is OAuth 2.0 + a thin layer that returns an **ID token** (a JWT containing user info) at step 5. Google IS an OIDC provider — so at step 5 we get a signed `id_token` with the user's `sub`, `email`, and `name` already inside, plus an access token for fetching `picture`. Auth.js handles all of this; we just configure the provider.
 
-We don't write any of step 1–6 by hand. **Auth.js v5** does the dance for us. We configure it: "use GitHub, here's our client id and secret". Auth.js handles redirects, code exchange, and ends up calling our callback with the GitHub user profile.
+We don't write any of step 1–6 by hand. **Auth.js v5** does the dance for us. We configure it: "use Google, here's our client id and secret". Auth.js handles redirects, code exchange, ID-token verification (against Google's JWKS — see §3.3), and ends up calling our callback with the Google user profile.
 
 ---
 
@@ -176,7 +176,7 @@ Works. Adds a Redis hit per request. Hard to scale across regions.
 Backend signs a small JSON object with a secret key:
 
 ```json
-{ "sub": "12345", "email": "alice@github.com", "exp": 1730000000 }
+{ "sub": "12345", "email": "alice@gmail.com", "exp": 1730000000 }
 ```
 
 …with HMAC-SHA256, producing:
@@ -203,23 +203,23 @@ For us — and for most SaaS apps — short-lived JWT cookies are the right answ
 
 ### 3.3 JWKS — the "anyone can verify the IdP" trick
 
-Quick mention of a related concept you'll see in real auth code.
-
-When a third party (Auth0, Clerk, Google) issues JWTs, *they* sign them with their private key. *We* need to verify them with the matching public key. So Auth0 publishes its public keys at a URL like:
+When a third party (Google, Auth0, Clerk) issues JWTs, *they* sign them with their private key. *We* need to verify them with the matching public key. So every OIDC provider publishes its public keys at a well-known URL. Google's lives here:
 
 ```
-https://your-app.auth0.com/.well-known/jwks.json
+https://www.googleapis.com/oauth2/v3/certs
 ```
 
-JWKS = "JSON Web Key Set". Your backend:
+JWKS = "JSON Web Key Set". The verifying backend:
 1. Fetches that URL once.
 2. Caches the keys in memory.
 3. On token verify, picks the right key by `kid` (key ID) and checks the signature.
 4. Refreshes the cache periodically (keys rotate).
 
-Today's setup uses **GitHub OAuth** (not OIDC), so we don't actually fetch any JWKS — the cookie we sign is OUR JWT, signed with OUR secret, verified with OUR secret. No key rotation needed.
+**Auth.js handles this for us.** When Google sends back an `id_token` at step 5 of the OAuth flow, Auth.js fetches Google's JWKS, verifies the signature, caches the keys, and refreshes when the `kid` rotates. You won't see JWKS code in our repo — but it's running every time you sign in.
 
-But you should *know* JWKS exists. Day 41 (when we expose a public API), we'll use JWKS verification on inbound webhook signatures. And if you swap GitHub for Google or Clerk later, JWKS caching becomes part of the picture.
+The cookie we then *give the browser* is a separate JWT, signed with **our own** `AUTH_SECRET` (HMAC, not JWKS). Two JWTs, two trust models: the IdP's (asymmetric, verified via JWKS) for proving identity at sign-in time, ours (symmetric, verified with `AUTH_SECRET`) for session continuity on every request after.
+
+Day 41 (public API) you'll write JWKS verification yourself for inbound webhook signatures — that's where the pattern becomes hands-on.
 
 ---
 
@@ -288,17 +288,17 @@ First sign-in creates the row automatically. Standard for B2C and self-serve B2B
 The pattern:
 
 ```ts
-// inside the auth middleware, after we know the GitHub profile
+// inside the auth middleware, after we know the Google profile
 let user = await db.query.users.findFirst({
-  where: eq(users.externalId, githubProfile.id),
+  where: eq(users.externalId, googleProfile.id),
 });
 
 if (!user) {
   [user] = await db.insert(users).values({
-    externalId: githubProfile.id,
-    email:      githubProfile.email,
-    displayName: githubProfile.name,
-    avatarUrl:  githubProfile.avatarUrl,
+    externalId: googleProfile.id,
+    email:      googleProfile.email,
+    displayName: googleProfile.name,
+    avatarUrl:  googleProfile.avatarUrl,
   }).returning();
 
   // Day 4 will emit `user.registered` here, via outbox.
@@ -309,7 +309,7 @@ req.user = user;
 
 Three things to note:
 
-1. **`external_id` is the IdP's `sub`** (GitHub's numeric user id). Never trust the email — emails change; `sub` doesn't.
+1. **`external_id` is the IdP's `sub`** (Google's user identifier — a 21-digit numeric string). Never trust the email — emails change; `sub` doesn't.
 2. **The lookup happens once per request** (cached in `req.user`). The verify-the-cookie part is microsecond-fast; the DB lookup adds ~1ms.
 3. **First-time provisioning emits an event** (Day 4+) so downstream systems (audit, analytics) know there's a new user. Today we just create the row.
 
@@ -324,7 +324,7 @@ After all the pieces are wired, here's what happens when Alice opens `/w/acme/ta
                             Cookie: __Host-syncra-session=eyJ...
                                 │
    2. Auth.js middleware:    decodes the JWT, verifies HMAC sig
-                             → { sub: '12345', email: 'alice@github.com' }
+                             → { sub: '12345', email: 'alice@gmail.com' }
                                 │
    3. Identity middleware:   db.query.users.findFirst(externalId='12345')
                              → user row { id: 'a1b...', email, displayName, ... }
@@ -345,17 +345,17 @@ After all the pieces are wired, here's what happens when Alice opens `/w/acme/ta
 For a sign-in attempt:
 
 ```
-   1. Browser hits:          GET /api/auth/signin/github
+   1. Browser hits:          GET /api/auth/signin/google
                                 │
-   2. Auth.js redirects to:  github.com/login/oauth/authorize?...
+   2. Auth.js redirects to:  accounts.google.com/o/oauth2/v2/auth?...
                                 │
-   3. User authorizes on GitHub
+   3. User signs in / consents on Google
                                 │
-   4. GitHub redirects to:   /api/auth/callback/github?code=abc123
+   4. Google redirects to:   /api/auth/callback/google?code=abc123
                                 │
    5. Auth.js exchanges code (server-to-server) for an access token
                                 │
-   6. Auth.js calls api.github.com/user with the access token
+   6. Auth.js calls googleapis.com/oauth2/v3/userinfo with the access token
                              → { id, email, name, avatar_url }
                                 │
    7. Auth.js issues a signed JWT cookie
@@ -377,10 +377,10 @@ This is the most important slide. Auth.js is a library. It does some things; we 
 
 | Job                                                | Done by                              |
 | -------------------------------------------------- | ------------------------------------ |
-| Render `/api/auth/signin/github` redirect           | Auth.js                              |
-| Handle `/api/auth/callback/github`                  | Auth.js                              |
+| Render `/api/auth/signin/google` redirect           | Auth.js                              |
+| Handle `/api/auth/callback/google`                  | Auth.js                              |
 | Exchange auth code for tokens                       | Auth.js                              |
-| Fetch GitHub user profile                           | Auth.js                              |
+| Fetch Google user profile                           | Auth.js                              |
 | Sign + set the session JWT cookie                   | Auth.js                              |
 | Set cookie flags (`__Host-`, etc.)                  | Auth.js (we configure)               |
 | Verify the cookie on each request                   | Auth.js helper (our middleware uses it) |
@@ -389,7 +389,7 @@ This is the most important slide. Auth.js is a library. It does some things; we 
 | Create the user row on first sign-in                | **Our `IdentityService`** (we own)   |
 | Expose `/api/me` endpoint                           | **Our `IdentityController`** (we own) |
 | Sign the user out                                   | Auth.js (we trigger)                 |
-| Render `/login` and `Sign in with GitHub` button    | **Our frontend** (we own)            |
+| Render `/login` and `Sign in with Google` button    | **Our frontend** (we own)            |
 | Decide where to redirect after login                | Auth.js (we configure)               |
 
 The seam is clean: Auth.js handles cryptographic and protocol bits; we handle our domain.
@@ -416,13 +416,13 @@ The seam is clean: Auth.js handles cryptographic and protocol bits; we handle ou
 By the end of the day:
 
 - [ ] Auth.js v5 mounted on the backend at `/api/auth/*`.
-- [ ] GitHub OAuth app created; client id + secret in `.env`.
+- [ ] Google OAuth client created; client id + secret in `.env`.
 - [ ] `apps/backend/src/modules/identity` with controller, service, middleware.
 - [ ] `GET /api/me` returns the signed-in user; 401 otherwise.
 - [ ] `POST /api/auth/signout` clears the cookie.
 - [ ] Cookie has `__Host-syncra-session` name with `Secure`, `HttpOnly`, `SameSite=Lax`.
 - [ ] First-time sign-in JIT-creates a row in `users`.
-- [ ] Frontend `/login` page with "Sign in with GitHub" button.
+- [ ] Frontend `/login` page with "Sign in with Google" button.
 - [ ] Frontend `useMe()` hook + 401-redirect to `/login`.
 - [ ] **ADR 0002** committed: *Auth.js v5 vs Clerk vs roll-your-own*.
 
@@ -438,7 +438,7 @@ npx nx serve frontend                     # Vite, port 4200 (proxies /api → 30
 
 # 2) Sign-in flow (browser)
 open http://localhost:4200/login
-# click "Sign in with GitHub" → GitHub asks → click Authorize → bounced to /
+# click "Sign in with Google" → Google asks → click Authorize → bounced to /
 
 # 3) Verify the cookie was set
 # DevTools → Application → Cookies → __Host-syncra-session
@@ -466,7 +466,7 @@ curl -s http://localhost:4200/api/me   # → 401 Unauthorized
 
 ## 9. Today's mental shifts (the lessons)
 
-1. **You don't store passwords. Ever.** OAuth means GitHub (or Google, or Clerk) is the password authority. Your backend never sees plaintext passwords, never hashes them, never gets called for password resets. That's a huge attack surface gone.
+1. **You don't store passwords. Ever.** OAuth means Google (or another OIDC IdP like Auth0, Clerk) is the password authority. Your backend never sees plaintext passwords, never hashes them, never gets called for password resets. That's a huge attack surface gone.
 2. **Auth = identity + session.** Identity is "who are you" (proven once, by OAuth). Session is "you're still you" (proven on every request, by cookie). They're separate problems with separate solutions. Today we built both halves.
 3. **Cookie flags are the four-screw mounting bracket.** `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`. Anything less and your auth cookie is a footgun. Memorize this; cite it in code review.
 4. **JIT provisioning is the user lifecycle's first step.** Today: row created on first OAuth callback. Day 4: that creates a workspace. Week 11: SCIM keeps it in sync with corporate IdPs. The whole pipeline starts here.
@@ -483,8 +483,8 @@ curl -s http://localhost:4200/api/me   # → 401 Unauthorized
 
 ## 11. What we did NOT do today (and why)
 
-- **Email/password auth.** Bigger attack surface, password resets, breached-password checks. We delegate to GitHub. Day 11+ if we ever need it.
-- **Multi-factor auth.** GitHub provides it for free at their layer. Good enough until we add internal accounts.
+- **Email/password auth.** Bigger attack surface, password resets, breached-password checks. We delegate to Google. Day 11+ if we ever need it.
+- **Multi-factor auth.** Google provides it for free at their layer. Good enough until we add internal accounts.
 - **SAML / SSO.** Week 11. Enterprise-grade IdP integration.
 - **Refresh tokens.** Auth.js handles short-lived sessions internally. We don't expose refresh tokens to the SPA.
 - **Anonymous sessions.** Every workspace needs a real owner from row 1. No anonymous browsing today.

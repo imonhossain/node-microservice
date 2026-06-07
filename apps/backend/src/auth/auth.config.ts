@@ -1,4 +1,4 @@
-import GitHub from '@auth/express/providers/github';
+import Google from '@auth/express/providers/google';
 import type { ExpressAuthConfig } from '@auth/express';
 
 export const authConfig: ExpressAuthConfig = {
@@ -7,9 +7,9 @@ export const authConfig: ExpressAuthConfig = {
   secret: process.env.AUTH_SECRET,
 
   providers: [
-    GitHub({
-      clientId: process.env.AUTH_GITHUB_ID!,
-      clientSecret: process.env.AUTH_GITHUB_SECRET!,
+    Google({
+      clientId: process.env.AUTH_GOOGLE_ID!,
+      clientSecret: process.env.AUTH_GOOGLE_SECRET!,
     }),
   ],
 
@@ -32,7 +32,7 @@ export const authConfig: ExpressAuthConfig = {
         token.sub = String(profile.id ?? token.sub);
         token.email = profile.email ?? token.email;
         token.name = profile.name ?? token.name;
-        token.picture = (profile as { avatar_url?: string }).avatar_url ?? token.picture;
+        token.picture = (profile as { picture?: string }).picture ?? token.picture;
         token.provider = account.provider;
       }
       return token;
