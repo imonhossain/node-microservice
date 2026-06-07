@@ -18,8 +18,8 @@ function LoginPage() {
   return (
     <div style={{ maxWidth: 360, margin: '120px auto', textAlign: 'center' }}>
       <h1>Sign in to Syncra</h1>
-      <p style={{ color: '#666' }}>Use your GitHub account</p>
-      <form method="post" action="/api/auth/signin/github" style={{ marginTop: 16 }}>
+      <p style={{ color: '#666' }}>Use your Google account</p>
+      <form method="post" action="/api/auth/signin/google" style={{ marginTop: 16 }}>
         <input type="hidden" name="csrfToken" value={csrfToken ?? ''} />
         <input type="hidden" name="callbackUrl" value="/" />
         <button
@@ -27,15 +27,16 @@ function LoginPage() {
           disabled={!csrfToken}
           style={{
             padding: '10px 20px',
-            background: '#24292f',
+            background: '#4285f4',
             color: 'white',
             border: 0,
             borderRadius: 6,
+            fontWeight: 500,
             cursor: csrfToken ? 'pointer' : 'not-allowed',
             opacity: csrfToken ? 1 : 0.6,
           }}
         >
-          Sign in with GitHub
+          Sign in with Google
         </button>
       </form>
     </div>

@@ -17,13 +17,13 @@ That's a SaaS app. Let's build the social layer of it.
 
 ## 1. The problem (a tiny story)
 
-Yesterday Alice signed in via GitHub. She landed on `/`, saw her name, and… nothing else.
+Yesterday Alice signed in via Google. She landed on `/`, saw her name, and… nothing else.
 
 Today's failure cases we have to prevent:
 
 1. **Alice creates "Acme Inc." and is the owner.** Easy case — works.
-2. **Alice invites bob@acme.com as a member.** Bob clicks the email link. He's signed in already (also via GitHub). He joins Acme. 
-3. **Alice invites carol@acme.com.** Carol has no GitHub account yet. She clicks → goes to GitHub → signs up there → comes back → joins Acme.
+2. **Alice invites bob@acme.com as a member.** Bob clicks the email link. He's signed in already (also via Google). He joins Acme. 
+3. **Alice invites carol@acme.com.** Carol isn't signed into Google in this browser yet. She clicks the email link → goes to Google → signs in (or creates an account if needed) → bounces back → joins Acme.
 4. **Bob tries to invite somebody (he's just a member, not an admin).** Backend returns 403. Frontend hides the button.
 5. **Alice's link to invite dan@acme.com was forwarded to mallory@evil.com.** Mallory tries to use it. We need to think hard about this.
 6. **Bob bookmarks `/w/acme/members` then signs out.** Visits the link. Sees `/login`, not "you have permission".
@@ -429,7 +429,7 @@ npx nx serve backend
 npx nx serve frontend
 
 # 2) Sign in as user A in one browser (or incognito profile)
-open http://localhost:4200/login → GitHub → land on /onboarding/workspace
+open http://localhost:4200/login → Google → land on /onboarding/workspace
 
 # 3) Create workspace "acme"
 # 4) Invite user-b@example.com → check Mailpit at http://localhost:8025
@@ -469,7 +469,7 @@ SQL
 - **tRPC**. Day 5. Today's endpoints are plain REST so we can verify with `curl`.
 - **Audit events.** Day 9 (outbox) + Day 10 (audit consumer). Today's writes happen but don't emit `workspace.created` to NATS yet.
 - **Tasks, projects, custom fields.** Day 8 onward.
-- **SSO / SAML.** Week 11. Today we trust GitHub via Auth.js.
+- **SSO / SAML.** Week 11. Today we trust Google via Auth.js.
 - **Email background queue.** Day 30. Today we send inline (dev only — fine for Mailpit).
 - **Plan tiers / quotas.** Out of scope (ARCHITECTURE.md §1.4 SaaS posture).
 - **Workspace transfer.** Owner-change flow is a real lifecycle event we'll add later. Not in 80-day plan.
